@@ -525,6 +525,13 @@ impl LlamaModelParams {
         self
     }
 
+    /// sets `use_mmap`
+    #[must_use]
+    pub fn with_use_mmap(mut self, use_mmap: bool) -> Self {
+        self.params.use_mmap = use_mmap;
+        self
+    }
+
     /// sets `split_mode`
     #[must_use]
     pub fn with_split_mode(mut self, split_mode: LlamaSplitMode) -> Self {
