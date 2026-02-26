@@ -618,6 +618,10 @@ fn main() {
     );
     config.define("LLAMA_CURL", "OFF");
 
+    // Missing HTTP Client symbols
+    config.define("HTTPLIB_COMPILE", "ON");
+    
+
     // Pass CMAKE_ environment variables down to CMake
     for (key, value) in env::vars() {
         if key.starts_with("CMAKE_") {
@@ -1237,6 +1241,16 @@ fn main() {
             println!("cargo:rustc-link-lib=static=gomp");
         } else {
             println!("cargo:rustc-link-lib=gomp");
+        }
+    }
+
+    // Vendor
+    let vendor_lib_dir = out_dir.join("build").join("vendor"); 
+    if vendor_lib_dir.is_dir() {
+        let http_lib_dir = vendor_lib_dir.join("cpp-httplib");
+        if http_lib_dir.is_dir() {
+            println!("cargo:rustc-link-search=native={}", http_lib_dir.display());
+            println!("cargo:rustc-link-lib=static=cpp-httplib");
         }
     }
 
