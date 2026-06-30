@@ -620,7 +620,7 @@ fn main() {
 
     // Missing HTTP Client symbols
     config.define("HTTPLIB_COMPILE", "ON");
-    
+    config.define("LLAMA_OPENSSL", "OFF");
 
     // Pass CMAKE_ environment variables down to CMake
     for (key, value) in env::vars() {
@@ -1245,7 +1245,7 @@ fn main() {
     }
 
     // Vendor
-    let vendor_lib_dir = out_dir.join("build").join("vendor"); 
+    let vendor_lib_dir = out_dir.join("build").join("vendor");
     if vendor_lib_dir.is_dir() {
         let http_lib_dir = vendor_lib_dir.join("cpp-httplib");
         if http_lib_dir.is_dir() {
