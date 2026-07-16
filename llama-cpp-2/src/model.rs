@@ -134,19 +134,19 @@ impl LlamaChatMessageFull {
     /// - If either of ``role`` or ``content`` contain null bytes.
     /// - If ``reasoning_content``, ``tool_name``, ``tool_call_id``, or ``tool_calls`` are provided, and they contain null bytes.
     pub fn new(
-        role: String,
-        content: String,
-        reasoning_content: Option<String>,
-        tool_name: Option<String>,
-        tool_call_id: Option<String>,
+        role: &str,
+        content: &str,
+        reasoning_content: Option<&str>,
+        tool_name: Option<&str>,
+        tool_call_id: Option<&str>,
         tool_calls: Option<&[LlamaChatToolCall]>,
     ) -> Result<Self, NewLlamaChatMessageError> {
         Ok(Self {
-            role: CString::new(role)?,
-            content: CString::new(content)?,
-            reasoning_content: CString::new(reasoning_content.unwrap_or_default())?,
-            tool_name: CString::new(tool_name.unwrap_or_default())?,
-            tool_call_id: CString::new(tool_call_id.unwrap_or_default())?,
+            role: CString::new(role.to_string())?,
+            content: CString::new(content.to_string())?,
+            reasoning_content: CString::new(reasoning_content.unwrap_or_default().to_string())?,
+            tool_name: CString::new(tool_name.unwrap_or_default().to_string())?,
+            tool_call_id: CString::new(tool_call_id.unwrap_or_default().to_string())?,
             tool_calls: tool_calls.map_or_else(Vec::new, |slice| slice.to_vec()),
         })
     }
@@ -1050,81 +1050,82 @@ impl LlamaModel {
     pub fn apply_chat_template_full(
         &self,
         tmpl: &LlamaChatTemplate,
-        chat: &[LlamaChatMessageFull],
-        tools: &[LlamaChatTool],
         params: &LlamaGenerationParams,
     ) -> Result<LlamaChatParams, ApplyChatTemplateErrorFull> {
         let cmmn_cht_tmpl: *mut llama_cpp_sys_2::common_chat_template =
             unsafe { tmpl.to_common_chat_template(&self)? };
 
-        let mut gen_params: llama_cpp_sys_2::llama_rs_chat_template_generation_params = {
-            let msgs = chat
-                .iter()
-                .map(|c| {
-                    let tool_calls = c
-                        .tool_calls
-                        .iter()
-                        .map(|tc| llama_cpp_sys_2::llama_rs_chat_tool_call {
-                            name: tc.name.as_ptr(),
-                            id: tc.id.as_ptr(),
-                            arguments: tc.arguments.as_ptr(),
-                        })
-                        .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_tool_call>>();
-                    llama_cpp_sys_2::llama_rs_chat_message {
-                        role: c.role.as_ptr(),
-                        content: c.content.as_ptr(),
-                        reasoning_content: if c.reasoning_content.is_empty() {
-                            ptr::null_mut()
-                        } else {
-                            c.reasoning_content.as_ptr()
-                        },
-                        tool_name: if c.tool_name.is_empty() {
-                            ptr::null_mut()
-                        } else {
-                            c.tool_name.as_ptr()
-                        },
-                        tool_call_id: if c.tool_call_id.is_empty() {
-                            ptr::null_mut()
-                        } else {
-                            c.tool_name.as_ptr()
-                        },
-                        tool_calls: tool_calls.as_ptr(),
-                        n_tool_calls: c.tool_calls.len(),
-                    }
-                })
-                .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_message>>();
-            let tools = tools
-                .iter()
-                .map(|t| llama_cpp_sys_2::llama_rs_chat_tool {
-                    name: t.name.as_ptr(),
-                    description: t.description.as_ptr(),
-                    parameters: t.parameters.as_ptr(),
-                })
-                .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_tool>>();
+        let mut msgs_tool_calls = Vec::new();
+        let msgs = params
+            .messages
+            .iter()
+            .map(|c| {
+                let tool_calls = c
+                    .tool_calls
+                    .iter()
+                    .map(|tc| llama_cpp_sys_2::llama_rs_chat_tool_call {
+                        name: tc.name.as_ptr(),
+                        id: tc.id.as_ptr(),
+                        arguments: tc.arguments.as_ptr(),
+                    })
+                    .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_tool_call>>();
+                let tool_calls_ptr = tool_calls.as_ptr();
+                msgs_tool_calls.push(tool_calls);
+                llama_cpp_sys_2::llama_rs_chat_message {
+                    role: c.role.as_ptr(),
+                    content: c.content.as_ptr(),
+                    reasoning_content: if c.reasoning_content.is_empty() {
+                        ptr::null_mut()
+                    } else {
+                        c.reasoning_content.as_ptr()
+                    },
+                    tool_name: if c.tool_name.is_empty() {
+                        ptr::null_mut()
+                    } else {
+                        c.tool_name.as_ptr()
+                    },
+                    tool_call_id: if c.tool_call_id.is_empty() {
+                        ptr::null_mut()
+                    } else {
+                        c.tool_call_id.as_ptr()
+                    },
+                    tool_calls: tool_calls_ptr,
+                    n_tool_calls: c.tool_calls.len(),
+                }
+            })
+            .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_message>>();
+        let tools = params
+            .tools
+            .iter()
+            .map(|t| llama_cpp_sys_2::llama_rs_chat_tool {
+                name: t.name.as_ptr(),
+                description: t.description.as_ptr(),
+                parameters: t.parameters.as_ptr(),
+            })
+            .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_tool>>();
 
-            llama_cpp_sys_2::llama_rs_chat_template_generation_params {
-                messages: msgs.as_ptr(),
-                n_messages: msgs.len(),
-                tools: tools.as_ptr(),
-                n_tools: tools.len(),
-                add_generation_prompt: params.add_generation_prompt,
-                enable_thinking: params.enable_thinking,
-                extra_context: match &params.extra_context {
-                    Some(ctx) => CStr::from_bytes_with_nul(ctx.as_bytes())?.as_ptr(),
-                    None => ptr::null_mut(),
-                },
-                json_schema: match &params.json_schema {
-                    Some(js) => CStr::from_bytes_with_nul(js.as_bytes())?.as_ptr(),
-                    None => ptr::null_mut(),
-                },
-                grammar: match &params.grammar {
-                    Some(grm) => CStr::from_bytes_with_nul(grm.as_bytes())?.as_ptr(),
-                    None => ptr::null_mut(),
-                },
-                parallel_tool_calls: params.parallel_tool_calls,
-                add_bos: params.add_bos,
-                add_eos: params.add_eos,
-            }
+        let mut gen_params = llama_cpp_sys_2::llama_rs_chat_template_generation_params {
+            messages: msgs.as_ptr(),
+            n_messages: msgs.len(),
+            tools: tools.as_ptr(),
+            n_tools: tools.len(),
+            add_generation_prompt: params.add_generation_prompt,
+            enable_thinking: params.enable_thinking,
+            extra_context: match &params.extra_context {
+                Some(ctx) => CStr::from_bytes_with_nul(ctx.as_bytes())?.as_ptr(),
+                None => ptr::null_mut(),
+            },
+            json_schema: match &params.json_schema {
+                Some(js) => CStr::from_bytes_with_nul(js.as_bytes())?.as_ptr(),
+                None => ptr::null_mut(),
+            },
+            grammar: match &params.grammar {
+                Some(grm) => CStr::from_bytes_with_nul(grm.as_bytes())?.as_ptr(),
+                None => ptr::null_mut(),
+            },
+            parallel_tool_calls: params.parallel_tool_calls,
+            add_bos: params.add_bos,
+            add_eos: params.add_eos,
         };
 
         let out_chat_params: *mut llama_cpp_sys_2::llama_rs_common_chat_params =
@@ -1158,48 +1159,76 @@ impl LlamaModel {
                 };
 
                 let grammar_triggers = unsafe {
-                    std::slice::from_raw_parts(
-                        (*out_chat_params).grammar_triggers,
-                        (*out_chat_params).n_grammar_triggers,
-                    )
-                    .iter()
-                    .map(|gt| LlamaGrammarTrigger {
-                        trigger_type: gt.type_.into(),
-                        value: get_string(gt.value),
-                        token: LlamaToken(gt.token),
-                    })
-                    .collect::<Vec<LlamaGrammarTrigger>>()
+                    if !(*out_chat_params).grammar_triggers.is_null()
+                        && (*out_chat_params).n_grammar_triggers > 0
+                        && (*out_chat_params).n_grammar_triggers < i32::MAX as usize
+                    {
+                        std::slice::from_raw_parts(
+                            (*out_chat_params).grammar_triggers,
+                            (*out_chat_params).n_grammar_triggers,
+                        )
+                        .iter()
+                        .map(|gt| LlamaGrammarTrigger {
+                            trigger_type: gt.type_.into(),
+                            value: get_string(gt.value),
+                            token: LlamaToken(gt.token),
+                        })
+                        .collect::<Vec<LlamaGrammarTrigger>>()
+                    } else {
+                        Vec::new()
+                    }
                 };
                 let message_spans = unsafe {
-                    std::slice::from_raw_parts(
-                        (*out_chat_params).message_spans,
-                        (*out_chat_params).n_message_spans,
-                    )
-                    .iter()
-                    .map(|ms| LlamaChatMsgSpan {
-                        role: get_string(ms.role),
-                        pos: ms.pos,
-                        len: ms.len,
-                    })
-                    .collect::<Vec<LlamaChatMsgSpan>>()
+                    if !(*out_chat_params).message_spans.is_null()
+                        && (*out_chat_params).n_message_spans > 0
+                        && (*out_chat_params).n_message_spans < i32::MAX as usize
+                    {
+                        std::slice::from_raw_parts(
+                            (*out_chat_params).message_spans,
+                            (*out_chat_params).n_message_spans,
+                        )
+                        .iter()
+                        .map(|ms| LlamaChatMsgSpan {
+                            role: get_string(ms.role),
+                            pos: ms.pos,
+                            len: ms.len,
+                        })
+                        .collect::<Vec<LlamaChatMsgSpan>>()
+                    } else {
+                        Vec::new()
+                    }
                 };
                 let preserved_tokens = unsafe {
-                    std::slice::from_raw_parts(
-                        (*out_chat_params).preserved_tokens,
-                        (*out_chat_params).n_preserved_tokens,
-                    )
-                    .iter()
-                    .map(|pt| get_string(*pt))
-                    .collect::<Vec<String>>()
+                    if !(*out_chat_params).preserved_tokens.is_null()
+                        && (*out_chat_params).n_preserved_tokens > 0
+                        && (*out_chat_params).n_preserved_tokens < i32::MAX as usize
+                    {
+                        std::slice::from_raw_parts(
+                            (*out_chat_params).preserved_tokens,
+                            (*out_chat_params).n_preserved_tokens,
+                        )
+                        .iter()
+                        .map(|pt| get_string(*pt))
+                        .collect::<Vec<String>>()
+                    } else {
+                        Vec::new()
+                    }
                 };
                 let additional_stops = unsafe {
-                    std::slice::from_raw_parts(
-                        (*out_chat_params).additional_stops,
-                        (*out_chat_params).n_additional_stops,
-                    )
-                    .iter()
-                    .map(|s| get_string(*s))
-                    .collect::<Vec<String>>()
+                    if !(*out_chat_params).additional_stops.is_null()
+                        && (*out_chat_params).n_additional_stops > 0
+                        && (*out_chat_params).n_additional_stops < i32::MAX as usize
+                    {
+                        std::slice::from_raw_parts(
+                            (*out_chat_params).additional_stops,
+                            (*out_chat_params).n_additional_stops,
+                        )
+                        .iter()
+                        .map(|s| get_string(*s))
+                        .collect::<Vec<String>>()
+                    } else {
+                        Vec::new()
+                    }
                 };
 
                 let params_res = unsafe {
