@@ -29,7 +29,7 @@ use llama_cpp_sys_2::{
 };
 
 use crate::{
-    model::{LlamaChatMessage, LlamaChatTemplate, LlamaChatTool, LlamaModel},
+    model::{LlamaChatMessage, LlamaChatMessageFull, LlamaChatTemplate, LlamaChatTool, LlamaModel},
     token::LlamaToken,
     AnalyzeTemplateError::{self},
     NewAutoParserError,
@@ -502,7 +502,7 @@ impl From<llama_rs_tool_format> for LlamaToolFormat {
 #[derive(Debug, Clone)]
 pub struct LlamaGenerationParams {
     /// Message history in order.
-    pub messages: Vec<LlamaChatMessage>,
+    pub messages: Vec<LlamaChatMessageFull>,
     /// Tools to be aware of.
     pub tools: Vec<LlamaChatTool>,
     /// Add generation prompt to the prompt.
@@ -537,7 +537,7 @@ impl LlamaGenerationParams {
     /// Use this to create a builder for `LlamaGenerationParams`.
     pub fn builder() -> LlamaGenerationParamsBuilder {
         LlamaGenerationParamsBuilder {
-            messages: Vec::<LlamaChatMessage>::default(),
+            messages: Vec::<LlamaChatMessageFull>::default(),
             tools: None,
             add_generation_prompt: false,
             enable_thinking: true,
@@ -554,7 +554,7 @@ impl LlamaGenerationParams {
 impl Default for LlamaGenerationParams {
     fn default() -> Self {
         Self {
-            messages: Vec::<LlamaChatMessage>::default(),
+            messages: Vec::<LlamaChatMessageFull>::default(),
             tools: Vec::<LlamaChatTool>::default(),
             add_generation_prompt: false,
             enable_thinking: true,
@@ -572,7 +572,7 @@ impl Default for LlamaGenerationParams {
 #[derive(Debug, Clone)]
 pub struct LlamaGenerationParamsBuilder {
     /// Message history in order.
-    pub messages: Vec<LlamaChatMessage>,
+    pub messages: Vec<LlamaChatMessageFull>,
     /// Tools to be aware of.
     pub tools: Option<Vec<LlamaChatTool>>,
     /// Add generation prompt to the prompt.
@@ -605,7 +605,7 @@ pub struct LlamaGenerationParamsBuilder {
 
 impl LlamaGenerationParamsBuilder {
     /// Set the message history to use for this generation.
-    pub fn with_messages(mut self, messages: &[LlamaChatMessage]) -> Self {
+    pub fn with_messages(mut self, messages: &[LlamaChatMessageFull]) -> Self {
         self.messages = messages.to_vec();
         self
     }
@@ -632,24 +632,24 @@ impl LlamaGenerationParamsBuilder {
 
     /// Set the extra context to use for this generation.
     /// - Defaults to `None`
-    pub fn with_extra_context(mut self, extra_context: String) -> Self {
-        self.extra_context = Some(extra_context);
+    pub fn with_extra_context(mut self, extra_context: &str) -> Self {
+        self.extra_context = Some(extra_context.to_string());
         self
     }
 
     /// Set the JSON schema to use for constrained output.
     /// - If grammar is set, this will be ignored.
     /// - Defaults to `None`
-    pub fn with_json_schema(mut self, json_schema: String) -> Self {
-        self.json_schema = Some(json_schema);
+    pub fn with_json_schema(mut self, json_schema: &str) -> Self {
+        self.json_schema = Some(json_schema.to_string());
         self
     }
 
     /// Set the grammar to use for constrained output.
     /// - If this is set, `json_schema` will be ignored.
     /// - Defaults to `None`
-    pub fn with_grammar(mut self, grammar: String) -> Self {
-        self.grammar = Some(grammar);
+    pub fn with_grammar(mut self, grammar: &str) -> Self {
+        self.grammar = Some(grammar.to_string());
         self
     }
 
