@@ -92,11 +92,15 @@ llama_rs_status llama_rs_autoparser_analyze_template(
 void llama_rs_template_analysis_free(
     struct llama_rs_template_analysis *analysis);
 
-struct common_chat_params *llama_rs_chat_apply_template_with_params(
+llama_rs_status llama_rs_chat_apply_template_with_params(
     const struct common_chat_template *tmpl,
-    const struct llama_rs_chat_template_generation_params *params);
+    const struct llama_rs_chat_template_generation_params *params,
+    struct llama_rs_common_chat_params *out_chat_params);
 
-void llama_rs_common_chat_params_free(struct common_chat_params *params);
+struct llama_rs_common_chat_params *llama_rs_common_chat_params_init(void);
+
+void llama_rs_common_chat_params_free(
+    struct llama_rs_common_chat_params *params);
 
 struct common_chat_template *
 llama_rs_common_chat_template_init(const char *src, const char *bos_token,

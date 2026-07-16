@@ -1,5 +1,6 @@
 #pragma once
 
+#include "llama.cpp/include/llama.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -199,3 +200,59 @@ typedef struct llama_rs_chat_message {
   const struct llama_rs_chat_tool_call *tool_calls;
   size_t n_tool_calls;
 } llama_rs_chat_message;
+
+// ============================================================================
+// Chat params result
+// ============================================================================
+
+typedef enum llama_rs_common_chat_format {
+  LLAMA_RS_COMMON_CHAT_FORMAT_CONTENT_ONLY,
+
+  /// These are intended to be parsed by the PEG parser
+  LLAMA_RS_COMMON_CHAT_FORMAT_PEG_SIMPLE,
+  LLAMA_RS_COMMON_CHAT_FORMAT_PEG_NATIVE,
+  LLAMA_RS_COMMON_CHAT_FORMAT_PEG_GEMMA4,
+  /// Not a format, just the # formats
+  LLAMA_RS_COMMON_CHAT_FORMAT_COUNT,
+} llama_rs_common_chat_format;
+
+typedef enum llama_rs_common_grammar_trigger_type {
+  LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN,
+  LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_WORD,
+  LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN,
+  LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL,
+} llama_rs_common_grammar_trigger_type;
+
+typedef struct llama_rs_common_chat_params {
+  enum llama_rs_common_chat_format format;
+  char *prompt;
+  char *grammar;
+  bool grammar_lazy;
+  char *generation_prompt;
+  bool supports_thinking;
+  /// e.g., "<think>"
+  char *thinking_start_tag;
+  /// e.g., "</think>"
+  char *thinking_end_tag;
+  const struct llama_rs_common_grammar_trigger *grammar_triggers;
+  size_t n_grammar_triggers;
+  char **preserved_tokens;
+  size_t n_preserved_tokens;
+  char **additional_stops;
+  size_t n_additional_stops;
+  char *parser;
+  const struct llama_rs_common_chat_msg_span *message_spans;
+  size_t n_message_spans;
+} llama_rs_chat_params;
+
+typedef struct llama_rs_common_grammar_trigger {
+  enum llama_rs_common_grammar_trigger_type type;
+  char *value;
+  llama_token token;
+} llama_rs_common_grammar_trigger;
+
+typedef struct llama_rs_common_chat_msg_span {
+  char *role;
+  size_t pos;
+  size_t len;
+} llama_rs_common_chat_msg_span;

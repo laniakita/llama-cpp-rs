@@ -439,11 +439,12 @@ llama_rs_template_analysis_free(struct llama_rs_template_analysis *analysis) {
   llama_rs_string_free(analysis->tools.call_id.suffix);
 }
 
-extern "C" struct common_chat_params *llama_rs_chat_apply_template_with_params(
+extern "C" llama_rs_status llama_rs_chat_apply_template_with_params(
     const struct common_chat_template *tmpl,
-    const struct llama_rs_chat_template_generation_params *params) {
-  if (!tmpl || !params) {
-    return nullptr;
+    const struct llama_rs_chat_template_generation_params *params,
+    struct llama_rs_common_chat_params *out_chat_params) {
+  if (!tmpl || !params || !out_chat_params) {
+    return LLAMA_RS_STATUS_INVALID_ARGUMENT;
   }
   try {
     autoparser::generation_params inputs;
@@ -513,19 +514,99 @@ extern "C" struct common_chat_params *llama_rs_chat_apply_template_with_params(
       }
     }
 
-    common_chat_params *res = new common_chat_params();
-    *res = autoparser::peg_generator::generate_parser(*tmpl, inputs);
-    return res;
+    common_chat_params res = autoparser::peg_generator::generate_parser(*tmpl, inputs);
+
+    llama_rs_common_grammar_trigger *triggers_arr = nullptr;
+    if (!res.grammar_triggers.empty()) {
+      triggers_arr = static_cast<llama_rs_common_grammar_trigger *>(
+          std::malloc(res.grammar_triggers.size() *
+                      sizeof(llama_rs_common_grammar_trigger)));
+      for (size_t i = 0; i < res.grammar_triggers.size(); ++i) {
+        triggers_arr[i].type =
+            llama_rs_common_grammar_trigger_type(res.grammar_triggers[i].type);
+        triggers_arr[i].value =
+            llama_rs_dup_string(res.grammar_triggers[i].value);
+        triggers_arr[i].token = res.grammar_triggers[i].token;
+      }
+    }
+
+    llama_rs_common_chat_msg_span *spans_arr = nullptr;
+    if (!res.message_spans.empty()) {
+      spans_arr = static_cast<llama_rs_common_chat_msg_span *>(std::malloc(
+          res.message_spans.size() * sizeof(llama_rs_common_chat_msg_span)));
+      for (size_t i = 0; i < res.message_spans.size(); ++i) {
+        spans_arr[i].role = llama_rs_dup_string(res.message_spans[i].role);
+        spans_arr[i].pos = res.message_spans[i].pos;
+        spans_arr[i].len = res.message_spans[i].len;
+      }
+    }
+
+    *out_chat_params = {
+        .format = llama_rs_common_chat_format(res.format),
+        .prompt = llama_rs_dup_string(res.prompt),
+        .grammar = llama_rs_dup_string(res.grammar),
+        .grammar_lazy = res.grammar_lazy,
+        .generation_prompt = llama_rs_dup_string(res.generation_prompt),
+        .supports_thinking = res.supports_thinking,
+        .thinking_start_tag = llama_rs_dup_string(res.thinking_start_tag),
+        .thinking_end_tag = llama_rs_dup_string(res.thinking_end_tag),
+        .grammar_triggers = triggers_arr,
+        .n_grammar_triggers = res.grammar_triggers.size(),
+        .preserved_tokens = llama_rs_dup_string_vector(res.preserved_tokens),
+        .n_preserved_tokens = res.preserved_tokens.size(),
+        .additional_stops = llama_rs_dup_string_vector(res.additional_stops),
+        .n_additional_stops = res.additional_stops.size(),
+        .parser = llama_rs_dup_string(res.parser),
+        .message_spans = spans_arr,
+        .n_message_spans = res.message_spans.size(),
+    };
+    return LLAMA_RS_STATUS_OK;
   } catch (...) {
-    return nullptr;
+    return LLAMA_RS_STATUS_EXCEPTION;
   }
 }
 
+extern "C" struct llama_rs_common_chat_params *
+llama_rs_common_chat_params_init() {
+  return new llama_rs_common_chat_params();
+}
+
 extern "C" void
-llama_rs_common_chat_params_free(struct common_chat_params *params) {
-  if (params) {
-    delete params;
+llama_rs_common_chat_params_free(struct llama_rs_common_chat_params *params) {
+  if (!params) {
+    return;
   }
+  llama_rs_string_free(params->prompt);
+  llama_rs_string_free(params->grammar);
+  llama_rs_string_free(params->generation_prompt);
+  llama_rs_string_free(params->thinking_start_tag);
+  llama_rs_string_free(params->thinking_end_tag);
+  if (params->grammar_triggers) {
+    for (size_t i = 0; i < params->n_grammar_triggers; ++i) {
+      llama_rs_string_free(params->grammar_triggers[i].value);
+    }
+    std::free(const_cast<struct llama_rs_common_grammar_trigger *>(params->grammar_triggers));
+  }
+  if (params->preserved_tokens) {
+    for (size_t i = 0; i < params->n_preserved_tokens; ++i) {
+      llama_rs_string_free(params->preserved_tokens[i]);
+    }
+    std::free(params->preserved_tokens);
+  }
+  if (params->additional_stops) {
+    for (size_t i = 0; i < params->n_additional_stops; ++i) {
+      llama_rs_string_free(params->additional_stops[i]);
+    }
+    std::free(params->additional_stops);
+  }
+  llama_rs_string_free(params->parser);
+  if (params->message_spans) {
+    for (size_t i = 0; i < params->n_message_spans; ++i) {
+      llama_rs_string_free(const_cast<char *>(params->message_spans[i].role));
+    }
+    std::free(const_cast<struct llama_rs_common_chat_msg_span *>(params->message_spans));
+  }
+  delete params;
 }
 
 extern "C" struct common_chat_template *

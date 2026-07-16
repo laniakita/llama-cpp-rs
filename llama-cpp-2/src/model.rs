@@ -7,6 +7,9 @@ use std::ptr::{self, NonNull};
 use std::slice;
 use std::str::Utf8Error;
 
+use crate::auto_parser::{
+    LlamaChatMsgSpan, LlamaChatParams, LlamaGenerationParams, LlamaGrammarTrigger,
+};
 use crate::context::params::LlamaContextParams;
 use crate::context::LlamaContext;
 use crate::llama_backend::LlamaBackend;
@@ -14,7 +17,8 @@ use crate::model::params::LlamaModelParams;
 use crate::token::LlamaToken;
 use crate::token_type::{LlamaTokenAttr, LlamaTokenAttrs};
 use crate::{
-    ApplyChatTemplateError, ChatTemplateError, LlamaContextLoadError, LlamaLoraAdapterInitError,
+    ApplyChatTemplateError, ApplyChatTemplateErrorFull, ChatTemplateError,
+    DeriveCommonChatTemplateError, LlamaContextLoadError, LlamaLoraAdapterInitError,
     LlamaModelLoadError, MetaValError, NewLlamaChatMessageError, StringToTokenError,
     TokenToStringError,
 };
@@ -65,6 +69,25 @@ impl LlamaChatTemplate {
     pub fn to_string(&self) -> Result<String, Utf8Error> {
         self.to_str().map(str::to_string)
     }
+
+    /// Derive a `common_chat_template`
+    pub(crate) unsafe fn to_common_chat_template(
+        &self,
+        model: &LlamaModel,
+    ) -> Result<*mut llama_cpp_sys_2::common_chat_template, DeriveCommonChatTemplateError> {
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
+        let bos_token_string = model.token_to_piece(model.token_bos(), &mut decoder, true, None)?;
+        let bos_token = CString::new(bos_token_string)?;
+        let eos_token_string = model.token_to_piece(model.token_eos(), &mut decoder, true, None)?;
+        let eos_token = CString::new(eos_token_string)?;
+        Ok(unsafe {
+            llama_cpp_sys_2::llama_rs_common_chat_template_init(
+                self.as_c_str().as_ptr(),
+                bos_token.as_ptr(),
+                eos_token.as_ptr(),
+            )
+        })
+    }
 }
 
 impl std::fmt::Debug for LlamaChatTemplate {
@@ -89,6 +112,98 @@ impl LlamaChatMessage {
         Ok(Self {
             role: CString::new(role)?,
             content: CString::new(content)?,
+        })
+    }
+}
+
+/// A Safe wrapper around `llama_chat_message`
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct LlamaChatMessageFull {
+    role: CString,
+    content: CString,
+    reasoning_content: CString,
+    tool_name: CString,
+    tool_call_id: CString,
+    tool_calls: Vec<LlamaChatToolCall>,
+}
+
+impl LlamaChatMessageFull {
+    /// Create a new `LlamaChatMessageFull`
+    ///
+    /// # Errors
+    /// - If either of ``role`` or ``content`` contain null bytes.
+    /// - If ``reasoning_content``, ``tool_name``, ``tool_call_id``, or ``tool_calls`` are provided, and they contain null bytes.
+    pub fn new(
+        role: String,
+        content: String,
+        reasoning_content: Option<String>,
+        tool_name: Option<String>,
+        tool_call_id: Option<String>,
+        tool_calls: Option<&[LlamaChatToolCall]>,
+    ) -> Result<Self, NewLlamaChatMessageError> {
+        Ok(Self {
+            role: CString::new(role)?,
+            content: CString::new(content)?,
+            reasoning_content: CString::new(reasoning_content.unwrap_or_default())?,
+            tool_name: CString::new(tool_name.unwrap_or_default())?,
+            tool_call_id: CString::new(tool_call_id.unwrap_or_default())?,
+            tool_calls: tool_calls.map_or_else(Vec::new, |slice| slice.to_vec()),
+        })
+    }
+}
+
+/// A Safe wrapper around `llama_chat_tool`
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct LlamaChatTool {
+    /// Name of the tool.
+    pub name: CString,
+    /// Description of the tool.
+    pub description: CString,
+    /// Stringified JSON schema for the tool's parameters.
+    pub parameters: CString,
+}
+
+impl LlamaChatTool {
+    /// Creates a new `LlamaChatTool`
+    ///
+    /// # Errors
+    /// if `name`, `description`, or `parameters` contain null bytes.
+    pub fn new(
+        name: String,
+        description: String,
+        parameters: String,
+    ) -> Result<Self, std::ffi::NulError> {
+        Ok(Self {
+            name: CString::new(name)?,
+            description: CString::new(description)?,
+            parameters: CString::new(parameters)?,
+        })
+    }
+}
+
+/// A wrapper around `llama_chat_tool_call`
+///
+/// This is used for nested tool calls within an assistant message (i.e. when a model calls multiple tools in a single turn).
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct LlamaChatToolCall {
+    /// Name of the tool being called.
+    pub name: CString,
+    /// Stringified JSON arguments for the tool call.
+    pub arguments: CString,
+    /// Identifier for this tool call.
+    pub id: CString,
+}
+
+impl LlamaChatToolCall {
+    /// Creates a new `LlamaChatToolCall`
+    ///
+    /// # Errors
+    /// if `name`, `arguments`, or `id` contain null bytes.
+    pub fn new(name: String, arguments: String, id: String) -> Result<Self, std::ffi::NulError> {
+        Ok(Self {
+            name: CString::new(name)?,
+            arguments: CString::new(arguments)?,
+            id: CString::new(id)?,
         })
     }
 }
@@ -916,6 +1031,211 @@ impl LlamaModel {
         }
         buff.truncate(res.try_into().expect("res is negative"));
         Ok(String::from_utf8(buff)?)
+    }
+
+    /// Apply the model's chat template with parameters.
+    ///
+    /// This uses llama.cpp's new PEG parser under the hood, which supports parsing complex Jinja templates,
+    /// as well as constrained outputs via a GGUF based grammar, or JSON schema format. Useful for allowing
+    /// unrestricted reasoning output, but grammar constrained content output.
+    ///
+    /// Use [`Self::chat_template`] to retrieve the template baked into the model (this is the preferred
+    /// mechanism as using the wrong chat template can result in really unexpected responses from the LLM).
+    ///
+    /// Use the [`LlamaGenerationParams::builder`] to configure and build the generation parameters.
+    ///
+    /// # Errors
+    /// There are many ways this can fail. See [`ApplyChatTemplateFullError`] for more information.
+    #[tracing::instrument(skip_all)]
+    pub fn apply_chat_template_full(
+        &self,
+        tmpl: &LlamaChatTemplate,
+        chat: &[LlamaChatMessageFull],
+        tools: &[LlamaChatTool],
+        params: &LlamaGenerationParams,
+    ) -> Result<LlamaChatParams, ApplyChatTemplateErrorFull> {
+        let cmmn_cht_tmpl: *mut llama_cpp_sys_2::common_chat_template =
+            unsafe { tmpl.to_common_chat_template(&self)? };
+
+        let mut gen_params: llama_cpp_sys_2::llama_rs_chat_template_generation_params = {
+            let msgs = chat
+                .iter()
+                .map(|c| {
+                    let tool_calls = c
+                        .tool_calls
+                        .iter()
+                        .map(|tc| llama_cpp_sys_2::llama_rs_chat_tool_call {
+                            name: tc.name.as_ptr(),
+                            id: tc.id.as_ptr(),
+                            arguments: tc.arguments.as_ptr(),
+                        })
+                        .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_tool_call>>();
+                    llama_cpp_sys_2::llama_rs_chat_message {
+                        role: c.role.as_ptr(),
+                        content: c.content.as_ptr(),
+                        reasoning_content: if c.reasoning_content.is_empty() {
+                            ptr::null_mut()
+                        } else {
+                            c.reasoning_content.as_ptr()
+                        },
+                        tool_name: if c.tool_name.is_empty() {
+                            ptr::null_mut()
+                        } else {
+                            c.tool_name.as_ptr()
+                        },
+                        tool_call_id: if c.tool_call_id.is_empty() {
+                            ptr::null_mut()
+                        } else {
+                            c.tool_name.as_ptr()
+                        },
+                        tool_calls: tool_calls.as_ptr(),
+                        n_tool_calls: c.tool_calls.len(),
+                    }
+                })
+                .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_message>>();
+            let tools = tools
+                .iter()
+                .map(|t| llama_cpp_sys_2::llama_rs_chat_tool {
+                    name: t.name.as_ptr(),
+                    description: t.description.as_ptr(),
+                    parameters: t.parameters.as_ptr(),
+                })
+                .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_tool>>();
+
+            llama_cpp_sys_2::llama_rs_chat_template_generation_params {
+                messages: msgs.as_ptr(),
+                n_messages: msgs.len(),
+                tools: tools.as_ptr(),
+                n_tools: tools.len(),
+                add_generation_prompt: params.add_generation_prompt,
+                enable_thinking: params.enable_thinking,
+                extra_context: match &params.extra_context {
+                    Some(ctx) => CStr::from_bytes_with_nul(ctx.as_bytes())?.as_ptr(),
+                    None => ptr::null_mut(),
+                },
+                json_schema: match &params.json_schema {
+                    Some(js) => CStr::from_bytes_with_nul(js.as_bytes())?.as_ptr(),
+                    None => ptr::null_mut(),
+                },
+                grammar: match &params.grammar {
+                    Some(grm) => CStr::from_bytes_with_nul(grm.as_bytes())?.as_ptr(),
+                    None => ptr::null_mut(),
+                },
+                parallel_tool_calls: params.parallel_tool_calls,
+                add_bos: params.add_bos,
+                add_eos: params.add_eos,
+            }
+        };
+
+        let out_chat_params: *mut llama_cpp_sys_2::llama_rs_common_chat_params =
+            unsafe { llama_cpp_sys_2::llama_rs_common_chat_params_init() };
+
+        let res_status = unsafe {
+            llama_cpp_sys_2::llama_rs_chat_apply_template_with_params(
+                cmmn_cht_tmpl,
+                &mut gen_params,
+                out_chat_params,
+            )
+        };
+
+        let result = match res_status {
+            llama_cpp_sys_2::LLAMA_RS_STATUS_OK => {
+                let get_string = |ptr: *const c_char| -> String {
+                    unsafe { CStr::from_ptr(ptr).to_string_lossy().to_string() }
+                };
+
+                let get_opt_string = |ptr: *const c_char| -> Option<String> {
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        let s = get_string(ptr);
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s)
+                        }
+                    }
+                };
+
+                let grammar_triggers = unsafe {
+                    std::slice::from_raw_parts(
+                        (*out_chat_params).grammar_triggers,
+                        (*out_chat_params).n_grammar_triggers,
+                    )
+                    .iter()
+                    .map(|gt| LlamaGrammarTrigger {
+                        trigger_type: gt.type_.into(),
+                        value: get_string(gt.value),
+                        token: LlamaToken(gt.token),
+                    })
+                    .collect::<Vec<LlamaGrammarTrigger>>()
+                };
+                let message_spans = unsafe {
+                    std::slice::from_raw_parts(
+                        (*out_chat_params).message_spans,
+                        (*out_chat_params).n_message_spans,
+                    )
+                    .iter()
+                    .map(|ms| LlamaChatMsgSpan {
+                        role: get_string(ms.role),
+                        pos: ms.pos,
+                        len: ms.len,
+                    })
+                    .collect::<Vec<LlamaChatMsgSpan>>()
+                };
+                let preserved_tokens = unsafe {
+                    std::slice::from_raw_parts(
+                        (*out_chat_params).preserved_tokens,
+                        (*out_chat_params).n_preserved_tokens,
+                    )
+                    .iter()
+                    .map(|pt| get_string(*pt))
+                    .collect::<Vec<String>>()
+                };
+                let additional_stops = unsafe {
+                    std::slice::from_raw_parts(
+                        (*out_chat_params).additional_stops,
+                        (*out_chat_params).n_additional_stops,
+                    )
+                    .iter()
+                    .map(|s| get_string(*s))
+                    .collect::<Vec<String>>()
+                };
+
+                let params_res = unsafe {
+                    LlamaChatParams {
+                        common_chat_format: (*out_chat_params).format.into(),
+                        prompt: get_string((*out_chat_params).prompt),
+                        grammar: get_opt_string((*out_chat_params).grammar),
+                        grammar_lazy: (*out_chat_params).grammar_lazy,
+                        generation_prompt: get_string((*out_chat_params).generation_prompt),
+                        supports_thinking: (*out_chat_params).supports_thinking,
+                        thinking_start_tag: get_opt_string((*out_chat_params).thinking_start_tag),
+                        thinking_end_tag: get_opt_string((*out_chat_params).thinking_end_tag),
+                        grammar_triggers,
+                        preserved_tokens,
+                        additional_stops,
+                        parser: get_string((*out_chat_params).parser),
+                        message_spans,
+                    }
+                };
+
+                Ok(params_res)
+            }
+            llama_cpp_sys_2::LLAMA_RS_STATUS_INVALID_ARGUMENT => {
+                Err(ApplyChatTemplateErrorFull::InvalidArgument)
+            }
+            llama_cpp_sys_2::LLAMA_RS_STATUS_EXCEPTION | _ => {
+                Err(ApplyChatTemplateErrorFull::LlamaCppException)
+            }
+        };
+
+        unsafe {
+            llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
+            llama_cpp_sys_2::llama_rs_common_chat_template_free(cmmn_cht_tmpl);
+        }
+
+        result
     }
 }
 
