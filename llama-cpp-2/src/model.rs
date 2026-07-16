@@ -17,10 +17,9 @@ use crate::model::params::LlamaModelParams;
 use crate::token::LlamaToken;
 use crate::token_type::{LlamaTokenAttr, LlamaTokenAttrs};
 use crate::{
-    ApplyChatTemplateError, ApplyChatTemplateErrorFull, ChatTemplateError,
-    DeriveCommonChatTemplateError, LlamaContextLoadError, LlamaLoraAdapterInitError,
-    LlamaModelLoadError, MetaValError, NewLlamaChatMessageError, StringToTokenError,
-    TokenToStringError,
+    ApplyChatTemplateError, ApplyChatTemplateErrorFull, ChatTemplateError, LlamaContextLoadError,
+    LlamaLoraAdapterInitError, LlamaModelLoadError, MetaValError, NewLlamaChatMessageError,
+    StringToTokenError, TokenToStringError,
 };
 
 pub mod params;
@@ -68,25 +67,6 @@ impl LlamaChatTemplate {
     /// Convenience method to create an owned String.
     pub fn to_string(&self) -> Result<String, Utf8Error> {
         self.to_str().map(str::to_string)
-    }
-
-    /// Derive a `common_chat_template`
-    pub(crate) unsafe fn to_common_chat_template(
-        &self,
-        model: &LlamaModel,
-    ) -> Result<*mut llama_cpp_sys_2::common_chat_template, DeriveCommonChatTemplateError> {
-        let mut decoder = encoding_rs::UTF_8.new_decoder();
-        let bos_token_string = model.token_to_piece(model.token_bos(), &mut decoder, true, None)?;
-        let bos_token = CString::new(bos_token_string)?;
-        let eos_token_string = model.token_to_piece(model.token_eos(), &mut decoder, true, None)?;
-        let eos_token = CString::new(eos_token_string)?;
-        Ok(unsafe {
-            llama_cpp_sys_2::llama_rs_common_chat_template_init(
-                self.as_c_str().as_ptr(),
-                bos_token.as_ptr(),
-                eos_token.as_ptr(),
-            )
-        })
     }
 }
 
@@ -1049,12 +1029,9 @@ impl LlamaModel {
     #[tracing::instrument(skip_all)]
     pub fn apply_chat_template_full(
         &self,
-        tmpl: &LlamaChatTemplate,
+        tmpl: Option<&LlamaChatTemplate>,
         params: &LlamaGenerationParams,
     ) -> Result<LlamaChatParams, ApplyChatTemplateErrorFull> {
-        let cmmn_cht_tmpl: *mut llama_cpp_sys_2::common_chat_template =
-            unsafe { tmpl.to_common_chat_template(&self)? };
-
         let mut msgs_tool_calls = Vec::new();
         let msgs = params
             .messages
@@ -1133,7 +1110,8 @@ impl LlamaModel {
 
         let res_status = unsafe {
             llama_cpp_sys_2::llama_rs_chat_apply_template_with_params(
-                cmmn_cht_tmpl,
+                self.model.as_ptr(),
+                tmpl.map_or(ptr::null(), |t| t.as_c_str().as_ptr()),
                 &mut gen_params,
                 out_chat_params,
             )
@@ -1261,7 +1239,6 @@ impl LlamaModel {
 
         unsafe {
             llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
-            llama_cpp_sys_2::llama_rs_common_chat_template_free(cmmn_cht_tmpl);
         }
 
         result

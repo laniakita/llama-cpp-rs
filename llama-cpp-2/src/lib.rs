@@ -425,23 +425,6 @@ pub enum ApplyChatTemplateError {
     FfiError(i32),
 }
 
-/// Failed to derive `common_chat_template`.
-#[derive(Debug, thiserror::Error)]
-pub enum DeriveCommonChatTemplateError {
-    /// the string contained a null byte and thus could not be converted to a c string.
-    #[error("{0}")]
-    NulError(#[from] NulError),
-    /// the string could not be converted to utf8.
-    #[error("{0}")]
-    FromUtf8Error(#[from] FromUtf8Error),
-    /// the string could not be converted to bytes due to presence of null bytes.
-    #[error("{0}")]
-    FromBytesWithNulError(#[from] FromBytesWithNulError),
-    /// the token could not be converted to a string.
-    #[error("{0}")]
-    TokenToStringError(#[from] TokenToStringError),
-}
-
 /// Failed to apply model chat template with params.
 #[derive(Debug, thiserror::Error)]
 pub enum ApplyChatTemplateErrorFull {
@@ -461,10 +444,6 @@ pub enum ApplyChatTemplateErrorFull {
     /// the string could not be converted to bytes due to presence of null bytes.
     #[error("{0}")]
     FromBytesWithNulError(#[from] FromBytesWithNulError),
-
-    /// Failed to derive `common_chat_template`.
-    #[error("{0}")]
-    DeriveCommonChatTemplateError(#[from] DeriveCommonChatTemplateError),
 
     /// Invalid argument.
     #[error("Invalid argument")]
@@ -497,9 +476,6 @@ pub enum AnalyzeTemplateError {
     /// Failed to convert a token to a string.
     #[error("Failed to convert token to string {0}")]
     TokenToStringError(#[from] TokenToStringError),
-    /// Failed to convert the template to a `common_chat_template`.
-    #[error("Failed to convert the template to a `common_chat_template`: {0}")]
-    TemplateConversionError(#[from] DeriveCommonChatTemplateError),
     /// The provided template was invalid.
     #[error("Invalid template: {0:#?}")]
     InvalidTemplate(LlamaChatTemplate),

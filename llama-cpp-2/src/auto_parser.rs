@@ -10,7 +10,6 @@ use llama_cpp_sys_2::{
     llama_rs_analyze_content, llama_rs_analyze_reasoning, llama_rs_analyze_tools,
     llama_rs_autoparser, llama_rs_autoparser_analyze_template, llama_rs_autoparser_free,
     llama_rs_autoparser_init, llama_rs_call_id_position, llama_rs_common_chat_format,
-    llama_rs_common_chat_template_free, llama_rs_common_chat_template_init,
     llama_rs_common_grammar_trigger_type, llama_rs_content_mode, llama_rs_reasoning_mode,
     llama_rs_template_analysis, llama_rs_template_analysis_free, llama_rs_tool_arguments_analysis,
     llama_rs_tool_format, llama_rs_tool_format_analysis, llama_rs_tool_function_analysis,
@@ -29,7 +28,7 @@ use llama_cpp_sys_2::{
 };
 
 use crate::{
-    model::{LlamaChatMessage, LlamaChatMessageFull, LlamaChatTemplate, LlamaChatTool, LlamaModel},
+    model::{LlamaChatMessageFull, LlamaChatTemplate, LlamaChatTool, LlamaModel},
     token::LlamaToken,
     AnalyzeTemplateError::{self},
     NewAutoParserError,
@@ -119,10 +118,13 @@ impl AutoParser {
             },
         };
 
-        let common_template = unsafe { template.to_common_chat_template(model)? };
-
         let res = unsafe {
-            llama_rs_autoparser_analyze_template(self.ptr, common_template, &mut analysis)
+            llama_rs_autoparser_analyze_template(
+                self.ptr,
+                model.model.as_ptr(),
+                template.as_c_str().as_ptr(),
+                &mut analysis,
+            )
         };
 
         if res < 0 {
@@ -139,7 +141,6 @@ impl AutoParser {
 
         unsafe {
             llama_rs_template_analysis_free(&mut analysis);
-            llama_rs_common_chat_template_free(common_template);
         }
 
         Ok(template_analysis)
