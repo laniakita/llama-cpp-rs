@@ -67,7 +67,7 @@ impl AutoParser {
     pub fn analyze_template(
         &self,
         model: &LlamaModel,
-        template: LlamaChatTemplate,
+        template: &LlamaChatTemplate,
     ) -> Result<LlamaChatTemplateAnalysis, AnalyzeTemplateError> {
         let mut analysis = llama_rs_template_analysis {
             reasoning: llama_rs_analyze_reasoning {
@@ -128,7 +128,7 @@ impl AutoParser {
         if res < 0 {
             match res {
                 LLAMA_RS_STATUS_INVALID_ARGUMENT => {
-                    return Err(AnalyzeTemplateError::InvalidTemplate(template));
+                    return Err(AnalyzeTemplateError::InvalidTemplate(template.clone()));
                 }
                 _ => {
                     return Err(AnalyzeTemplateError::ExceptionOccured);
