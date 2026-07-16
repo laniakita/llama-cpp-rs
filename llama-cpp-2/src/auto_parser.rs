@@ -1,15 +1,26 @@
+//! Provides a wrapper for the chat template autoparser.
+//!
+//! It also provides:
+//! - Supporting structs for the template analysis.
+//! - High-level structs for the generation params.
+//!
 use std::{ffi::CStr, ptr::null_mut};
 
 use llama_cpp_sys_2::{
     llama_rs_analyze_content, llama_rs_analyze_reasoning, llama_rs_analyze_tools,
     llama_rs_autoparser, llama_rs_autoparser_analyze_template, llama_rs_autoparser_free,
-    llama_rs_autoparser_init, llama_rs_call_id_position, llama_rs_common_chat_template_free,
-    llama_rs_common_chat_template_init, llama_rs_content_mode, llama_rs_reasoning_mode,
+    llama_rs_autoparser_init, llama_rs_call_id_position, llama_rs_common_chat_format,
+    llama_rs_common_chat_template_free, llama_rs_common_chat_template_init,
+    llama_rs_common_grammar_trigger_type, llama_rs_content_mode, llama_rs_reasoning_mode,
     llama_rs_template_analysis, llama_rs_template_analysis_free, llama_rs_tool_arguments_analysis,
     llama_rs_tool_format, llama_rs_tool_format_analysis, llama_rs_tool_function_analysis,
     llama_rs_tool_id_analysis, LLAMA_RS_CALL_ID_POSITION_BETWEEN_FUNC_AND_ARGS,
     LLAMA_RS_CALL_ID_POSITION_NONE, LLAMA_RS_CALL_ID_POSITION_POST_ARGS,
-    LLAMA_RS_CALL_ID_POSITION_PRE_FUNC_NAME, LLAMA_RS_CONTENT_MODE_ALWAYS_WRAPPED,
+    LLAMA_RS_CALL_ID_POSITION_PRE_FUNC_NAME, LLAMA_RS_COMMON_CHAT_FORMAT_CONTENT_ONLY,
+    LLAMA_RS_COMMON_CHAT_FORMAT_PEG_GEMMA4, LLAMA_RS_COMMON_CHAT_FORMAT_PEG_NATIVE,
+    LLAMA_RS_COMMON_CHAT_FORMAT_PEG_SIMPLE, LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN,
+    LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL, LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN,
+    LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_WORD, LLAMA_RS_CONTENT_MODE_ALWAYS_WRAPPED,
     LLAMA_RS_CONTENT_MODE_PLAIN, LLAMA_RS_CONTENT_MODE_WRAPPED_WITH_REASONING,
     LLAMA_RS_REASONING_MODE_NONE, LLAMA_RS_REASONING_MODE_TAG_BASED,
     LLAMA_RS_REASONING_MODE_TOOLS_ONLY, LLAMA_RS_STATUS_INVALID_ARGUMENT,
@@ -18,7 +29,8 @@ use llama_cpp_sys_2::{
 };
 
 use crate::{
-    model::{LlamaChatTemplate, LlamaModel},
+    model::{LlamaChatMessage, LlamaChatTemplate, LlamaChatTool, LlamaModel},
+    token::LlamaToken,
     AnalyzeTemplateError::{self},
     NewAutoParserError,
 };
@@ -107,22 +119,7 @@ impl AutoParser {
             },
         };
 
-        let common_template = {
-            let mut decoder = encoding_rs::UTF_8.new_decoder();
-            let bos_token_string =
-                model.token_to_piece(model.token_bos(), &mut decoder, true, None)?;
-            let bos_token = CStr::from_bytes_with_nul(bos_token_string.as_bytes())?;
-            let eos_token_string =
-                model.token_to_piece(model.token_eos(), &mut decoder, true, None)?;
-            let eos_token = CStr::from_bytes_with_nul(eos_token_string.as_bytes())?;
-            unsafe {
-                llama_rs_common_chat_template_init(
-                    template.as_c_str().as_ptr(),
-                    bos_token.as_ptr(),
-                    eos_token.as_ptr(),
-                )
-            }
-        };
+        let common_template = unsafe { template.to_common_chat_template(model)? };
 
         let res = unsafe {
             llama_rs_autoparser_analyze_template(self.ptr, common_template, &mut analysis)
@@ -494,4 +491,342 @@ impl From<llama_rs_tool_format> for LlamaToolFormat {
             _ => Self::default(),
         }
     }
+}
+
+// ============================================================================
+// Chat params
+// ============================================================================
+
+/// Convenience struct which gets converted to `generation_params`.
+/// See `generation_params` for defaults: https://github.com/ggml-org/llama.cpp/blob/32beb244f5c2ca91c583be15d4671643b54ba238/common/chat-auto-parser.h#L54
+#[derive(Debug, Clone)]
+pub struct LlamaGenerationParams {
+    /// Message history in order.
+    pub messages: Vec<LlamaChatMessage>,
+    /// Tools to be aware of.
+    pub tools: Vec<LlamaChatTool>,
+    /// Add generation prompt to the prompt.
+    /// - Defaults to `false`
+    pub add_generation_prompt: bool,
+    /// Enable thinking.
+    /// - Defaults to `true`.
+    pub enable_thinking: bool,
+
+    /// Stringified JSON object for Jinja kwargs
+    pub extra_context: Option<String>,
+
+    /// Stringified JSON schema for constrained output
+    /// - If grammar is set, this will be ignored.
+    pub json_schema: Option<String>,
+    /// Grammar to use for constrained output
+    /// - If this is set, `json_schema` will be ignored.
+    pub grammar: Option<String>,
+
+    /// Enable parallel tool calls.
+    /// - Defaults to `true`.
+    pub parallel_tool_calls: bool,
+    /// Add beginning of sentence token.
+    /// - Defaults to `false`.
+    pub add_bos: bool,
+    /// Add end of sentence token.
+    /// - Defaults to `false`.
+    pub add_eos: bool,
+}
+
+impl LlamaGenerationParams {
+    /// Use this to create a builder for `LlamaGenerationParams`.
+    pub fn builder() -> LlamaGenerationParamsBuilder {
+        LlamaGenerationParamsBuilder {
+            messages: Vec::<LlamaChatMessage>::default(),
+            tools: None,
+            add_generation_prompt: false,
+            enable_thinking: true,
+            extra_context: None,
+            json_schema: None,
+            grammar: None,
+            parallel_tool_calls: true,
+            add_bos: false,
+            add_eos: false,
+        }
+    }
+}
+
+impl Default for LlamaGenerationParams {
+    fn default() -> Self {
+        Self {
+            messages: Vec::<LlamaChatMessage>::default(),
+            tools: Vec::<LlamaChatTool>::default(),
+            add_generation_prompt: false,
+            enable_thinking: true,
+            extra_context: None,
+            json_schema: None,
+            grammar: None,
+            parallel_tool_calls: true,
+            add_bos: false,
+            add_eos: false,
+        }
+    }
+}
+
+/// Builder for `LlamaGenerationParams`.
+#[derive(Debug, Clone)]
+pub struct LlamaGenerationParamsBuilder {
+    /// Message history in order.
+    pub messages: Vec<LlamaChatMessage>,
+    /// Tools to be aware of.
+    pub tools: Option<Vec<LlamaChatTool>>,
+    /// Add generation prompt to the prompt.
+    /// - Defaults to `false`
+    pub add_generation_prompt: bool,
+    /// Enable thinking.
+    /// - Defaults to `true`.
+    pub enable_thinking: bool,
+
+    /// Stringified JSON object for Jinja kwargs
+    pub extra_context: Option<String>,
+
+    /// Stringified JSON schema for constrained output
+    /// - If grammar is set, this will be ignored.
+    pub json_schema: Option<String>,
+    /// Grammar to use for constrained output
+    /// - If this is set, `json_schema` will be ignored.
+    pub grammar: Option<String>,
+
+    /// Enable parallel tool calls.
+    /// - Defaults to `true`.
+    pub parallel_tool_calls: bool,
+    /// Add beginning of sentence token.
+    /// - Defaults to `false`.
+    pub add_bos: bool,
+    /// Add end of sentence token.
+    /// - Defaults to `false`.
+    pub add_eos: bool,
+}
+
+impl LlamaGenerationParamsBuilder {
+    /// Set the message history to use for this generation.
+    pub fn with_messages(mut self, messages: &[LlamaChatMessage]) -> Self {
+        self.messages = messages.to_vec();
+        self
+    }
+
+    /// Set the tools available to the model.
+    pub fn with_tools(mut self, tools: &[LlamaChatTool]) -> Self {
+        self.tools = Some(tools.to_vec());
+        self
+    }
+
+    /// Set whether to add the generation prompt.
+    /// - Defaults to `false`
+    pub fn with_add_generation_prompt(mut self, add_generation_prompt: bool) -> Self {
+        self.add_generation_prompt = add_generation_prompt;
+        self
+    }
+
+    /// Set whether to enable thinking.
+    /// - Defaults to `true`
+    pub fn with_enable_thinking(mut self, enable_thinking: bool) -> Self {
+        self.enable_thinking = enable_thinking;
+        self
+    }
+
+    /// Set the extra context to use for this generation.
+    /// - Defaults to `None`
+    pub fn with_extra_context(mut self, extra_context: String) -> Self {
+        self.extra_context = Some(extra_context);
+        self
+    }
+
+    /// Set the JSON schema to use for constrained output.
+    /// - If grammar is set, this will be ignored.
+    /// - Defaults to `None`
+    pub fn with_json_schema(mut self, json_schema: String) -> Self {
+        self.json_schema = Some(json_schema);
+        self
+    }
+
+    /// Set the grammar to use for constrained output.
+    /// - If this is set, `json_schema` will be ignored.
+    /// - Defaults to `None`
+    pub fn with_grammar(mut self, grammar: String) -> Self {
+        self.grammar = Some(grammar);
+        self
+    }
+
+    /// Set whether to enable parallel tool calls.
+    /// - Defaults to `true`
+    pub fn with_parallel_tool_calls(mut self, parallel_tool_calls: bool) -> Self {
+        self.parallel_tool_calls = parallel_tool_calls;
+        self
+    }
+
+    /// Set whether to add the beginning of sentence token.
+    /// - Defaults to `false`
+    pub fn with_add_bos(mut self, add_bos: bool) -> Self {
+        self.add_bos = add_bos;
+        self
+    }
+
+    /// Set whether to add the end of sentence token.
+    /// - Defaults to `false`
+    pub fn with_add_eos(mut self, add_eos: bool) -> Self {
+        self.add_eos = add_eos;
+        self
+    }
+
+    /// Build the `LlamaGenerationParams`.
+    pub fn build(self) -> LlamaGenerationParams {
+        LlamaGenerationParams {
+            messages: self.messages,
+            tools: self.tools.unwrap_or_default(),
+            add_generation_prompt: self.add_generation_prompt,
+            enable_thinking: self.enable_thinking,
+            extra_context: self.extra_context,
+            json_schema: self.json_schema,
+            grammar: self.grammar,
+            parallel_tool_calls: self.parallel_tool_calls,
+            add_bos: self.add_bos,
+            add_eos: self.add_eos,
+        }
+    }
+}
+
+/// Safe struct for `common_chat_params`.
+#[derive(Debug, Clone)]
+pub struct LlamaChatParams {
+    /// Chat format.
+    pub common_chat_format: LlamaChatFormat,
+    /// Formatted prompt.
+    pub prompt: String,
+    /// Grammar.
+    pub grammar: Option<String>,
+    /// Grammar lazy evaluation.
+    pub grammar_lazy: bool,
+    /// Generation prompt.
+    pub generation_prompt: String,
+    /// Whether the model supports thinking.
+    pub supports_thinking: bool,
+    /// The tag that marks the beginning of thinking.
+    pub thinking_start_tag: Option<String>, // e.g., "<think>"
+    /// The tag that marks the end of thinking.
+    pub thinking_end_tag: Option<String>, // e.g., "</think>"
+    /// What triggers the grammar to be evaluated.
+    pub grammar_triggers: Vec<LlamaGrammarTrigger>,
+    /// Tokens to preserve.
+    pub preserved_tokens: Vec<String>,
+    /// Additional tokens to stop generation at.
+    pub additional_stops: Vec<String>,
+    /// The parser to use.
+    pub parser: String,
+    /// Message spans.
+    pub message_spans: Vec<LlamaChatMsgSpan>,
+}
+
+impl Default for LlamaChatParams {
+    fn default() -> Self {
+        Self {
+            common_chat_format: LlamaChatFormat::default(),
+            prompt: String::default(),
+            grammar: None,
+            grammar_lazy: false,
+            generation_prompt: String::default(),
+            supports_thinking: false,
+            thinking_start_tag: None,
+            thinking_end_tag: None,
+            grammar_triggers: Vec::<LlamaGrammarTrigger>::default(),
+            preserved_tokens: Vec::<String>::default(),
+            additional_stops: Vec::<String>::default(),
+            parser: String::default(),
+            message_spans: Vec::<LlamaChatMsgSpan>::default(),
+        }
+    }
+}
+
+/// Safe enum for `common_chat_format`.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, Default)]
+pub enum LlamaChatFormat {
+    /// Chat format that only contains content.
+    #[default]
+    COMMON_CHAT_FORMAT_CONTENT_ONLY,
+    /// Simple PEG based chat format.
+
+    /// # Notes
+    /// - Intended to be parsed by the PEG parser.
+    COMMON_CHAT_FORMAT_PEG_SIMPLE,
+    /// Native PEG based chat format.
+    /// # Notes
+    /// - Intended to be parsed by the PEG parser.
+    COMMON_CHAT_FORMAT_PEG_NATIVE,
+    /// Gemma4 PEG based chat format.
+    /// # Notes
+    /// - Intended to be parsed by the PEG parser.
+    COMMON_CHAT_FORMAT_PEG_GEMMA4,
+
+    /// Not a format, just the # formats.
+    COMMON_CHAT_FORMAT_COUNT,
+}
+
+impl From<llama_rs_common_chat_format> for LlamaChatFormat {
+    fn from(value: llama_rs_common_chat_format) -> Self {
+        match value {
+            LLAMA_RS_COMMON_CHAT_FORMAT_CONTENT_ONLY => Self::COMMON_CHAT_FORMAT_CONTENT_ONLY,
+            LLAMA_RS_COMMON_CHAT_FORMAT_PEG_SIMPLE => Self::COMMON_CHAT_FORMAT_PEG_SIMPLE,
+            LLAMA_RS_COMMON_CHAT_FORMAT_PEG_NATIVE => Self::COMMON_CHAT_FORMAT_PEG_NATIVE,
+            LLAMA_RS_COMMON_CHAT_FORMAT_PEG_GEMMA4 => Self::COMMON_CHAT_FORMAT_PEG_GEMMA4,
+            _ => Self::default(),
+        }
+    }
+}
+
+/// Enum for `common_grammar_trigger_type`
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
+pub enum LlamaGrammarTriggerType {
+    /// Trigger grammar at a token boundary.
+    COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN,
+    /// Trigger grammar at a word boundary.
+    COMMON_GRAMMAR_TRIGGER_TYPE_WORD,
+    /// Trigger grammar at the start of a pattern.
+    COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN,
+    /// Trigger grammar at the end of a pattern.
+    COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL,
+}
+
+impl From<llama_rs_common_grammar_trigger_type> for LlamaGrammarTriggerType {
+    fn from(value: llama_rs_common_grammar_trigger_type) -> Self {
+        match value {
+            LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN => Self::COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN,
+            LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_WORD => Self::COMMON_GRAMMAR_TRIGGER_TYPE_WORD,
+            LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN => {
+                Self::COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN
+            }
+            LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL => {
+                Self::COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL
+            }
+            _ => Self::COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN,
+        }
+    }
+}
+
+/// Safe struct for `common_grammar_trigger`
+#[derive(Debug, Clone)]
+pub struct LlamaGrammarTrigger {
+    /// The type of grammar trigger.
+    pub trigger_type: LlamaGrammarTriggerType,
+    /// The value of the grammar trigger.
+    pub value: String,
+    /// The token that triggers the grammar.
+    pub token: LlamaToken,
+}
+
+/// Safe struct for `common_chat_msg_span`
+#[derive(Debug, Clone)]
+pub struct LlamaChatMsgSpan {
+    /// The role of the message.
+    pub role: String,
+    /// The starting position of the message.
+    pub pos: usize,
+    /// The length of the message.
+    pub len: usize,
 }
