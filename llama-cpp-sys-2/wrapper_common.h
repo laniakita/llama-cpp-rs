@@ -86,14 +86,16 @@ struct llama_rs_autoparser *llama_rs_autoparser_init(void);
 void llama_rs_autoparser_free(struct llama_rs_autoparser *autoparser);
 
 llama_rs_status llama_rs_autoparser_analyze_template(
-    struct llama_rs_autoparser *parser, const struct common_chat_template *tmpl,
+    struct llama_rs_autoparser *parser, const struct llama_model *model,
+    const char *chat_template,
     struct llama_rs_template_analysis *out_analysis);
 
 void llama_rs_template_analysis_free(
     struct llama_rs_template_analysis *analysis);
 
 llama_rs_status llama_rs_chat_apply_template_with_params(
-    const struct common_chat_template *tmpl,
+    const struct llama_model *model,
+    const char *chat_template,
     const struct llama_rs_chat_template_generation_params *params,
     struct llama_rs_common_chat_params *out_chat_params);
 
@@ -101,12 +103,6 @@ struct llama_rs_common_chat_params *llama_rs_common_chat_params_init(void);
 
 void llama_rs_common_chat_params_free(
     struct llama_rs_common_chat_params *params);
-
-struct common_chat_template *
-llama_rs_common_chat_template_init(const char *src, const char *bos_token,
-                                   const char *eos_token);
-
-void llama_rs_common_chat_template_free(struct common_chat_template *tmpl);
 
 #ifdef __cplusplus
 }
