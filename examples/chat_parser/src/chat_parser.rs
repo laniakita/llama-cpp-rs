@@ -187,7 +187,7 @@ impl<'a> ChatParserCliContext<'a> {
             .apply_chat_template_full(Some(&self.chat_template), &gen_params)
             .map_err(|e| format!("Failed to apply chat template: {e}"))?;
 
-        println!("Chat params: {:#?}", chat_params.prompt());
+        println!("Chat params: {:#?}", chat_params.view());
 
         let parser = ChatParser::new(&chat_params, &gen_params)?;
         self.parser.replace(parser);
