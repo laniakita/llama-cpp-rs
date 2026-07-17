@@ -27,19 +27,20 @@ static inline char *llama_rs_dup_string(const std::string &value) {
   return buffer;
 }
 
-static char **llama_rs_dup_string_vector(const std::vector<std::string> &vec) {
+static const char **
+llama_rs_dup_string_vector(const std::vector<std::string> &vec) {
   if (vec.empty()) {
     return nullptr;
   }
 
   // Allocate array of pointers, +1 for the null terminator
-  char **arr =
-      static_cast<char **>(std::malloc((vec.size() + 1) * sizeof(char *)));
+  const char **arr = static_cast<const char **>(
+      std::malloc((vec.size() + 1) * sizeof(char *)));
   if (!arr)
     return nullptr;
 
   for (size_t i = 0; i < vec.size(); ++i) {
-    arr[i] = llama_rs_dup_string(vec[i].c_str());
+    arr[i] = llama_rs_dup_string(vec[i]);
   }
 
   // Null terminate the array so Rust knows where it ends

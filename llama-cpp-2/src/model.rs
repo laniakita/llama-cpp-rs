@@ -7,9 +7,7 @@ use std::ptr::{self, NonNull};
 use std::slice;
 use std::str::Utf8Error;
 
-use crate::auto_parser::{
-    LlamaChatMsgSpan, LlamaChatParams, LlamaGenerationParams, LlamaGrammarTrigger,
-};
+use crate::chat_parser::{LlamaChatParams, LlamaGenerationParams};
 use crate::context::params::LlamaContextParams;
 use crate::context::LlamaContext;
 use crate::llama_backend::LlamaBackend;
@@ -99,12 +97,12 @@ impl LlamaChatMessage {
 /// A Safe wrapper around `llama_chat_message`
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct LlamaChatMessageFull {
-    role: CString,
-    content: CString,
-    reasoning_content: CString,
-    tool_name: CString,
-    tool_call_id: CString,
-    tool_calls: Vec<LlamaChatToolCall>,
+    pub(crate) role: CString,
+    pub(crate) content: CString,
+    pub(crate) reasoning_content: CString,
+    pub(crate) tool_name: CString,
+    pub(crate) tool_call_id: CString,
+    pub(crate) tool_calls: Vec<LlamaChatToolCall>,
 }
 
 impl LlamaChatMessageFull {
@@ -179,7 +177,7 @@ impl LlamaChatToolCall {
     ///
     /// # Errors
     /// if `name`, `arguments`, or `id` contain null bytes.
-    pub fn new(name: String, arguments: String, id: String) -> Result<Self, std::ffi::NulError> {
+    pub fn new(name: &str, arguments: &str, id: &str) -> Result<Self, std::ffi::NulError> {
         Ok(Self {
             name: CString::new(name)?,
             arguments: CString::new(arguments)?,
@@ -1015,9 +1013,13 @@ impl LlamaModel {
 
     /// Apply the model's chat template with parameters.
     ///
-    /// This uses llama.cpp's new PEG parser under the hood, which supports parsing complex Jinja templates,
-    /// as well as constrained outputs via a GGUF based grammar, or JSON schema format. Useful for allowing
-    /// unrestricted reasoning output, but grammar constrained content output.
+    /// This uses `common_chat_templates_apply` under the hood (with jinja enabled),
+    /// which will then try to init a model-tailored `LlamaChatParams`, or fall
+    /// back to llama.cpp's new PEG parser (autoparser) under the hood.
+    ///
+    /// Either way, this supports parsing complex Jinja templates,
+    /// as well as constrained outputs via a GGUF based grammar, or JSON schema format
+    /// (useful for allowing unrestricted reasoning output, but grammar constrained content output).
     ///
     /// Use [`Self::chat_template`] to retrieve the template baked into the model (this is the preferred
     /// mechanism as using the wrong chat template can result in really unexpected responses from the LLM).
@@ -1032,78 +1034,7 @@ impl LlamaModel {
         tmpl: Option<&LlamaChatTemplate>,
         params: &LlamaGenerationParams,
     ) -> Result<LlamaChatParams, ApplyChatTemplateErrorFull> {
-        let mut msgs_tool_calls = Vec::new();
-        let msgs = params
-            .messages
-            .iter()
-            .map(|c| {
-                let tool_calls = c
-                    .tool_calls
-                    .iter()
-                    .map(|tc| llama_cpp_sys_2::llama_rs_chat_tool_call {
-                        name: tc.name.as_ptr(),
-                        id: tc.id.as_ptr(),
-                        arguments: tc.arguments.as_ptr(),
-                    })
-                    .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_tool_call>>();
-                let tool_calls_ptr = tool_calls.as_ptr();
-                msgs_tool_calls.push(tool_calls);
-                llama_cpp_sys_2::llama_rs_chat_message {
-                    role: c.role.as_ptr(),
-                    content: c.content.as_ptr(),
-                    reasoning_content: if c.reasoning_content.is_empty() {
-                        ptr::null_mut()
-                    } else {
-                        c.reasoning_content.as_ptr()
-                    },
-                    tool_name: if c.tool_name.is_empty() {
-                        ptr::null_mut()
-                    } else {
-                        c.tool_name.as_ptr()
-                    },
-                    tool_call_id: if c.tool_call_id.is_empty() {
-                        ptr::null_mut()
-                    } else {
-                        c.tool_call_id.as_ptr()
-                    },
-                    tool_calls: tool_calls_ptr,
-                    n_tool_calls: c.tool_calls.len(),
-                }
-            })
-            .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_message>>();
-        let tools = params
-            .tools
-            .iter()
-            .map(|t| llama_cpp_sys_2::llama_rs_chat_tool {
-                name: t.name.as_ptr(),
-                description: t.description.as_ptr(),
-                parameters: t.parameters.as_ptr(),
-            })
-            .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_tool>>();
-
-        let mut gen_params = llama_cpp_sys_2::llama_rs_chat_template_generation_params {
-            messages: msgs.as_ptr(),
-            n_messages: msgs.len(),
-            tools: tools.as_ptr(),
-            n_tools: tools.len(),
-            add_generation_prompt: params.add_generation_prompt,
-            enable_thinking: params.enable_thinking,
-            extra_context: match &params.extra_context {
-                Some(ctx) => CStr::from_bytes_with_nul(ctx.as_bytes())?.as_ptr(),
-                None => ptr::null_mut(),
-            },
-            json_schema: match &params.json_schema {
-                Some(js) => CStr::from_bytes_with_nul(js.as_bytes())?.as_ptr(),
-                None => ptr::null_mut(),
-            },
-            grammar: match &params.grammar {
-                Some(grm) => CStr::from_bytes_with_nul(grm.as_bytes())?.as_ptr(),
-                None => ptr::null_mut(),
-            },
-            parallel_tool_calls: params.parallel_tool_calls,
-            add_bos: params.add_bos,
-            add_eos: params.add_eos,
-        };
+        let mut gen_params_state = params.into_state()?;
 
         let out_chat_params: *mut llama_cpp_sys_2::llama_rs_common_chat_params =
             unsafe { llama_cpp_sys_2::llama_rs_common_chat_params_init() };
@@ -1112,136 +1043,36 @@ impl LlamaModel {
             llama_cpp_sys_2::llama_rs_chat_apply_template_with_params(
                 self.model.as_ptr(),
                 tmpl.map_or(ptr::null(), |t| t.as_c_str().as_ptr()),
-                &mut gen_params,
+                &mut gen_params_state.params,
                 out_chat_params,
             )
         };
 
-        let result = match res_status {
+        match res_status {
             llama_cpp_sys_2::LLAMA_RS_STATUS_OK => {
-                let get_string = |ptr: *const c_char| -> String {
-                    unsafe { CStr::from_ptr(ptr).to_string_lossy().to_string() }
-                };
-
-                let get_opt_string = |ptr: *const c_char| -> Option<String> {
-                    if ptr.is_null() {
-                        None
-                    } else {
-                        let s = get_string(ptr);
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s)
+                match LlamaChatParams::new(out_chat_params) {
+                    Ok(params) => Ok(params),
+                    Err(e) => {
+                        unsafe {
+                            llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
                         }
+                        Err(e.into())
                     }
-                };
-
-                let grammar_triggers = unsafe {
-                    if !(*out_chat_params).grammar_triggers.is_null()
-                        && (*out_chat_params).n_grammar_triggers > 0
-                        && (*out_chat_params).n_grammar_triggers < i32::MAX as usize
-                    {
-                        std::slice::from_raw_parts(
-                            (*out_chat_params).grammar_triggers,
-                            (*out_chat_params).n_grammar_triggers,
-                        )
-                        .iter()
-                        .map(|gt| LlamaGrammarTrigger {
-                            trigger_type: gt.type_.into(),
-                            value: get_string(gt.value),
-                            token: LlamaToken(gt.token),
-                        })
-                        .collect::<Vec<LlamaGrammarTrigger>>()
-                    } else {
-                        Vec::new()
-                    }
-                };
-                let message_spans = unsafe {
-                    if !(*out_chat_params).message_spans.is_null()
-                        && (*out_chat_params).n_message_spans > 0
-                        && (*out_chat_params).n_message_spans < i32::MAX as usize
-                    {
-                        std::slice::from_raw_parts(
-                            (*out_chat_params).message_spans,
-                            (*out_chat_params).n_message_spans,
-                        )
-                        .iter()
-                        .map(|ms| LlamaChatMsgSpan {
-                            role: get_string(ms.role),
-                            pos: ms.pos,
-                            len: ms.len,
-                        })
-                        .collect::<Vec<LlamaChatMsgSpan>>()
-                    } else {
-                        Vec::new()
-                    }
-                };
-                let preserved_tokens = unsafe {
-                    if !(*out_chat_params).preserved_tokens.is_null()
-                        && (*out_chat_params).n_preserved_tokens > 0
-                        && (*out_chat_params).n_preserved_tokens < i32::MAX as usize
-                    {
-                        std::slice::from_raw_parts(
-                            (*out_chat_params).preserved_tokens,
-                            (*out_chat_params).n_preserved_tokens,
-                        )
-                        .iter()
-                        .map(|pt| get_string(*pt))
-                        .collect::<Vec<String>>()
-                    } else {
-                        Vec::new()
-                    }
-                };
-                let additional_stops = unsafe {
-                    if !(*out_chat_params).additional_stops.is_null()
-                        && (*out_chat_params).n_additional_stops > 0
-                        && (*out_chat_params).n_additional_stops < i32::MAX as usize
-                    {
-                        std::slice::from_raw_parts(
-                            (*out_chat_params).additional_stops,
-                            (*out_chat_params).n_additional_stops,
-                        )
-                        .iter()
-                        .map(|s| get_string(*s))
-                        .collect::<Vec<String>>()
-                    } else {
-                        Vec::new()
-                    }
-                };
-
-                let params_res = unsafe {
-                    LlamaChatParams {
-                        common_chat_format: (*out_chat_params).format.into(),
-                        prompt: get_string((*out_chat_params).prompt),
-                        grammar: get_opt_string((*out_chat_params).grammar),
-                        grammar_lazy: (*out_chat_params).grammar_lazy,
-                        generation_prompt: get_string((*out_chat_params).generation_prompt),
-                        supports_thinking: (*out_chat_params).supports_thinking,
-                        thinking_start_tag: get_opt_string((*out_chat_params).thinking_start_tag),
-                        thinking_end_tag: get_opt_string((*out_chat_params).thinking_end_tag),
-                        grammar_triggers,
-                        preserved_tokens,
-                        additional_stops,
-                        parser: get_string((*out_chat_params).parser),
-                        message_spans,
-                    }
-                };
-
-                Ok(params_res)
+                }
             }
             llama_cpp_sys_2::LLAMA_RS_STATUS_INVALID_ARGUMENT => {
+                unsafe {
+                    llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
+                }
                 Err(ApplyChatTemplateErrorFull::InvalidArgument)
             }
             llama_cpp_sys_2::LLAMA_RS_STATUS_EXCEPTION | _ => {
+                unsafe {
+                    llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
+                }
                 Err(ApplyChatTemplateErrorFull::LlamaCppException)
             }
-        };
-
-        unsafe {
-            llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
         }
-
-        result
     }
 }
 

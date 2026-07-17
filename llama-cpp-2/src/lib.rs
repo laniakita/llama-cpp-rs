@@ -18,13 +18,14 @@ use std::ffi::{c_char, CStr, CString, FromBytesWithNulError, NulError};
 use std::fmt::Debug;
 use std::num::NonZeroI32;
 
+use crate::chat_parser::ChatParamsCreationError;
 use crate::llama_batch::BatchAddError;
 use crate::model::LlamaChatTemplate;
 use std::os::raw::c_int;
 use std::path::PathBuf;
 use std::string::FromUtf8Error;
 
-pub mod auto_parser;
+pub mod chat_parser;
 pub mod context;
 pub mod gguf;
 pub mod llama_backend;
@@ -440,18 +441,16 @@ pub enum ApplyChatTemplateErrorFull {
     /// llama.cpp returned an error code.
     #[error("ffi error {0}")]
     FfiError(i32),
-
-    /// the string could not be converted to bytes due to presence of null bytes.
-    #[error("{0}")]
-    FromBytesWithNulError(#[from] FromBytesWithNulError),
-
     /// Invalid argument.
     #[error("Invalid argument")]
     InvalidArgument,
-
     /// Exception.
     #[error("Exception")]
     LlamaCppException,
+
+    /// Failed to create chat params view.
+    #[error("Failed to create chat params view: {0}")]
+    ViewCreationFailed(#[from] ChatParamsCreationError),
 }
 
 /// Failed to accept a token in a sampler.
