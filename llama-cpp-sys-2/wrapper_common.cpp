@@ -325,6 +325,9 @@ extern "C" llama_rs_status llama_rs_chat_apply_template_with_params(
     inputs.add_eos = params->add_eos;
     inputs.add_generation_prompt = params->add_generation_prompt;
     inputs.parallel_tool_calls = params->parallel_tool_calls;
+    inputs.reasoning_format = common_reasoning_format(params->reasoning_format);
+    inputs.continue_final_message =
+        common_chat_continuation(params->continue_final_message);
 
     if (params->extra_context) {
       auto parsed = nlohmann::json::parse(params->extra_context);
@@ -450,21 +453,26 @@ llama_rs_common_chat_params_view_init(
         std::malloc(chat_params->message_delimiters.delimiters.size() *
                     sizeof(llama_rs_common_chat_msg_delimiter)));
     if (delimiters_arr) {
-      for (size_t i = 0; i < chat_params->message_delimiters.delimiters.size(); ++i) {
-        delimiters_arr[i].role =
-            llama_rs_common_chat_role(chat_params->message_delimiters.delimiters[i].role);
-        delimiters_arr[i].delimiter =
-            llama_rs_dup_string(chat_params->message_delimiters.delimiters[i].delimiter);
+      for (size_t i = 0; i < chat_params->message_delimiters.delimiters.size();
+           ++i) {
+        delimiters_arr[i].role = llama_rs_common_chat_role(
+            chat_params->message_delimiters.delimiters[i].role);
+        delimiters_arr[i].delimiter = llama_rs_dup_string(
+            chat_params->message_delimiters.delimiters[i].delimiter);
         if (!chat_params->message_delimiters.delimiters[i].tokens.empty()) {
-          llama_token *tokens_arr = static_cast<llama_token *>(
-              std::malloc(chat_params->message_delimiters.delimiters[i].tokens.size() *
-                          sizeof(llama_token)));
+          llama_token *tokens_arr = static_cast<llama_token *>(std::malloc(
+              chat_params->message_delimiters.delimiters[i].tokens.size() *
+              sizeof(llama_token)));
           if (tokens_arr) {
-            std::memcpy(tokens_arr, chat_params->message_delimiters.delimiters[i].tokens.data(),
-                        chat_params->message_delimiters.delimiters[i].tokens.size() * sizeof(llama_token));
+            std::memcpy(
+                tokens_arr,
+                chat_params->message_delimiters.delimiters[i].tokens.data(),
+                chat_params->message_delimiters.delimiters[i].tokens.size() *
+                    sizeof(llama_token));
           }
           delimiters_arr[i].tokens = tokens_arr;
-          delimiters_arr[i].n_tokens = chat_params->message_delimiters.delimiters[i].tokens.size();
+          delimiters_arr[i].n_tokens =
+              chat_params->message_delimiters.delimiters[i].tokens.size();
         } else {
           delimiters_arr[i].tokens = nullptr;
           delimiters_arr[i].n_tokens = 0;
@@ -482,16 +490,20 @@ llama_rs_common_chat_params_view_init(
       llama_rs_dup_string(chat_params->thinking_start_tag);
   view->thinking_end_tag = llama_rs_dup_string(chat_params->thinking_end_tag);
   view->grammar_triggers = triggers_arr;
-  view->n_grammar_triggers = triggers_arr ? chat_params->grammar_triggers.size() : 0;
+  view->n_grammar_triggers =
+      triggers_arr ? chat_params->grammar_triggers.size() : 0;
   view->preserved_tokens =
       llama_rs_dup_string_vector(chat_params->preserved_tokens);
-  view->n_preserved_tokens = view->preserved_tokens ? chat_params->preserved_tokens.size() : 0;
+  view->n_preserved_tokens =
+      view->preserved_tokens ? chat_params->preserved_tokens.size() : 0;
   view->additional_stops =
       llama_rs_dup_string_vector(chat_params->additional_stops);
-  view->n_additional_stops = view->additional_stops ? chat_params->additional_stops.size() : 0;
+  view->n_additional_stops =
+      view->additional_stops ? chat_params->additional_stops.size() : 0;
   view->parser = llama_rs_dup_string(chat_params->parser);
   view->message_delimiters = delimiters_arr;
-  view->n_message_delimiters = delimiters_arr ? chat_params->message_delimiters.delimiters.size() : 0;
+  view->n_message_delimiters =
+      delimiters_arr ? chat_params->message_delimiters.delimiters.size() : 0;
 
   return view;
 }
@@ -529,9 +541,11 @@ extern "C" void llama_rs_common_chat_params_view_free(
   llama_rs_string_free(const_cast<char *>(view->parser));
   if (view->message_delimiters) {
     for (size_t i = 0; i < view->n_message_delimiters; ++i) {
-      llama_rs_string_free(const_cast<char *>(view->message_delimiters[i].delimiter));
+      llama_rs_string_free(
+          const_cast<char *>(view->message_delimiters[i].delimiter));
       if (view->message_delimiters[i].tokens) {
-        std::free(const_cast<llama_token *>(view->message_delimiters[i].tokens));
+        std::free(
+            const_cast<llama_token *>(view->message_delimiters[i].tokens));
       }
     }
     std::free(const_cast<struct llama_rs_common_chat_msg_delimiter *>(
@@ -585,7 +599,7 @@ extern "C" struct llama_rs_chat_parser *llama_rs_chat_parser_init(
   parser->params.parse_tool_calls = true;
 
   if (parser->params.is_continuation && !parser->params.echo) {
-      parser->msg_state = common_chat_parse("", true, parser->params);
+    parser->msg_state = common_chat_parse("", true, parser->params);
   }
 
   return parser;
@@ -610,7 +624,8 @@ llama_rs_chat_parser_feed(struct llama_rs_chat_parser *parser,
   }
   try {
     parser->generated_text += chunk;
-    common_chat_msg new_state = common_chat_parse(parser->generated_text, true, parser->params);
+    common_chat_msg new_state =
+        common_chat_parse(parser->generated_text, true, parser->params);
     auto *diffs = new std::vector<struct common_chat_msg_diff>(
         common_chat_msg_diff::compute_diffs(parser->msg_state, new_state));
     parser->msg_state = std::move(new_state);

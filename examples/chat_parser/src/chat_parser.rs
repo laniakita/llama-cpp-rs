@@ -3,15 +3,13 @@
 use std::borrow::Cow;
 use std::ffi::CString;
 use std::io::{self, Write};
-use std::num::{NonZero, NonZeroU32};
+use std::num::NonZeroU32;
 use std::path::Path;
 
 use clap::Parser;
 use encoding_rs::UTF_8;
 
-use llama_cpp_2::chat_parser::{
-    ChatParser, ChatParserInitError, LlamaGenerationParams, LlamaGenerationParamsBuilder,
-};
+use llama_cpp_2::chat_parser::{ChatParser, ChatParserInitError, LlamaGenerationParams};
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -22,8 +20,7 @@ use llama_cpp_2::mtmd::{
 
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::{
-    AddBos, LlamaChatMessageFull, LlamaChatTemplate, LlamaChatTool, LlamaChatToolCall, LlamaModel,
-    Special,
+    LlamaChatMessageFull, LlamaChatTemplate, LlamaChatTool, LlamaChatToolCall, LlamaModel,
 };
 use llama_cpp_2::sampling::LlamaSampler;
 
@@ -232,8 +229,8 @@ impl<'a> ChatParserCliContext<'a> {
 
         #[derive(Debug)]
         struct StreamChunk<'a> {
-            content: Cow<'a, str>,
-            reasoning: Cow<'a, str>,
+            content: Option<Cow<'a, str>>,
+            reasoning: Option<Cow<'a, str>>,
             tool_call: Option<LlamaChatToolCall>,
         }
 
@@ -258,20 +255,19 @@ impl<'a> ChatParserCliContext<'a> {
             // Print token
             let piece = model.token_to_piece(token, &mut decoder, true, None)?;
 
-            print!("{piece:?}");
-
+            //print!("{piece:?}");
             if let Ok(diffs) = parser.feed_piece(&piece) {
                 for diff in diffs {
                     let mut chunk = StreamChunk {
-                        content: "".into(),
-                        reasoning: "".into(),
+                        content: None,
+                        reasoning: None,
                         tool_call: None,
                     };
                     if let Some(reasoning) = diff.reasoning() {
-                        chunk.reasoning = reasoning;
+                        chunk.reasoning.replace(reasoning);
                     }
                     if let Some(content) = diff.content() {
-                        chunk.content = content;
+                        chunk.content.replace(content);
                     }
                     if let Some(tools) = diff.tool_call() {
                         chunk.tool_call.replace(tools);
