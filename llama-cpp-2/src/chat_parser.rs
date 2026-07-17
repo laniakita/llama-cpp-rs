@@ -215,17 +215,17 @@ impl<'a> ChatDiff<'a> {
     /// Gets the tool call delta.
     pub fn tool_call(&self) -> Option<LlamaChatToolCall> {
         unsafe {
-            if (*self.view).tool_call_name.is_null() {
-                None
-            } else {
+            if let Some(name) = Self::get_opt_string_cow((*self.view).tool_call_name) {
                 match LlamaChatToolCall::new(
-                    &Self::get_opt_string_cow((*self.view).tool_call_name).unwrap_or_default(),
+                    &name,
                     &Self::get_opt_string_cow((*self.view).tool_call_arguments).unwrap_or_default(),
                     &Self::get_opt_string_cow((*self.view).tool_call_id).unwrap_or_default(),
                 ) {
                     Ok(tc) => Some(tc),
                     Err(_) => None,
                 }
+            } else {
+                None
             }
         }
     }
@@ -235,9 +235,13 @@ impl<'a> ChatDiff<'a> {
             if ptr.is_null() {
                 None
             } else {
-                Some(Cow::Owned(
-                    CStr::from_ptr(ptr).to_string_lossy().into_owned(),
-                ))
+                let res: Cow<'a, str> =
+                    Cow::Owned(CStr::from_ptr(ptr).to_string_lossy().into_owned());
+                if res.is_empty() {
+                    None
+                } else {
+                    Some(res)
+                }
             }
         }
     }
@@ -873,9 +877,9 @@ impl LlamaGenerationParamsBuilder {
 
 /// Chat continuation method provided via `with_continue_final_message`. Only used by [ChatParser].
 #[derive(Debug, Clone, Copy, Default)]
-enum LlamaChatContinuation {
-    NONE,
+pub enum LlamaChatContinuation {
     #[default]
+    NONE,
     AUTO,
     REASONING,
     CONTENT,
@@ -908,7 +912,7 @@ impl Into<llama_rs_common_chat_continuation> for LlamaChatContinuation {
 /// reasoning format) only used by [ChatParser].
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, Default)]
-enum LlamaReasoningFormat {
+pub enum LlamaReasoningFormat {
     /// Skip reasoning extraction.
     NONE,
     /// Same as deepseek, using `message.reasoning_content`
