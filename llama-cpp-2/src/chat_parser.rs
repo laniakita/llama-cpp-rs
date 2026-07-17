@@ -90,7 +90,7 @@ impl ChatParser {
     ///
     /// # Errors
     /// Returns `ChatParserFeedError` if the C++ engine fails.
-    pub fn feed_piece<'a>(&'a mut self, piece: &str) -> Result<ChatDiff<'a>, ChatParserFeedError> {
+    pub fn feed_piece<'a>(&'a mut self, piece: &str) -> Result<Vec<ChatDiff<'a>>, ChatParserFeedError> {
         let mut diffs_ptr = ptr::null_mut();
         let diffs_res: llama_rs_status = unsafe {
             llama_rs_chat_parser_feed(self.ptr, CString::new(piece)?.as_ptr(), &mut diffs_ptr)
@@ -98,15 +98,27 @@ impl ChatParser {
         match diffs_res {
             LLAMA_RS_STATUS_OK => {
                 let len = unsafe { llama_rs_chat_msg_diffs_len(diffs_ptr) };
-                match ChatDiff::new(diffs_ptr, len.saturating_sub(1)) {
-                    Ok(diff) => Ok(diff),
-                    Err(e) => {
-                        unsafe {
-                            llama_rs_common_chat_msg_diffs_free(diffs_ptr);
+                if len == 0 {
+                    unsafe { llama_rs_common_chat_msg_diffs_free(diffs_ptr) };
+                    return Ok(Vec::new());
+                }
+
+                let mut diffs = Vec::with_capacity(len);
+                for i in 0..len {
+                    match ChatDiff::new(diffs_ptr, i) {
+                        Ok(diff) => diffs.push(diff),
+                        Err(e) => {
+                            unsafe {
+                                llama_rs_common_chat_msg_diffs_free(diffs_ptr);
+                            }
+                            return Err(e.into());
                         }
-                        Err(e.into())
                     }
                 }
+                unsafe {
+                    llama_rs_common_chat_msg_diffs_free(diffs_ptr);
+                }
+                Ok(diffs)
             }
             LLAMA_RS_STATUS_INVALID_ARGUMENT => return Err(ChatParserFeedError::InvalidArgument),
             LLAMA_RS_STATUS_EXCEPTION | _ => return Err(ChatParserFeedError::Exception),
@@ -134,8 +146,6 @@ pub enum ChatDiffCreationError {
 /// A Safe wrapper around `common_chat_diff`.
 #[derive(Debug, Clone)]
 pub struct ChatDiff<'a> {
-    ptr: *mut llama_rs_common_chat_msg_diffs,
-    index: usize,
     _marker: std::marker::PhantomData<&'a ()>,
     view: *mut llama_rs_chat_msg_diff_view,
 }
@@ -151,8 +161,6 @@ impl<'a> ChatDiff<'a> {
             unsafe { llama_rs_chat_msg_diff_get_view(diff, index, view) };
         match view_res {
             LLAMA_RS_STATUS_OK => Ok(Self {
-                ptr: diff,
-                index,
                 _marker: std::marker::PhantomData,
                 view,
             }),
@@ -212,7 +220,7 @@ impl<'a> ChatDiff<'a> {
             if ptr.is_null() {
                 None
             } else {
-                Some(CStr::from_ptr(ptr).to_string_lossy())
+                Some(Cow::Owned(CStr::from_ptr(ptr).to_string_lossy().into_owned()))
             }
         }
     }
@@ -222,7 +230,6 @@ impl<'a> Drop for ChatDiff<'a> {
     fn drop(&mut self) {
         unsafe {
             llama_rs_chat_msg_diff_view_free(self.view);
-            llama_rs_common_chat_msg_diffs_free(self.ptr)
         }
     }
 }
