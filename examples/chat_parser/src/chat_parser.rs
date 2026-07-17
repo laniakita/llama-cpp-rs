@@ -97,7 +97,7 @@ pub struct ChatParserCliParams {
 #[allow(missing_debug_implementations)]
 pub struct ChatParserCliContext<'a> {
     /// The MTMD context for multimodal processing.
-    //pub mtmd_ctx: MtmdContext,
+    pub mtmd_ctx: MtmdContext,
     /// The batch used for processing tokens.
     pub batch: LlamaBatch<'a>,
     /// The list of loaded bitmaps (images/audio).
@@ -120,7 +120,6 @@ impl<'a> ChatParserCliContext<'a> {
         params: &ChatParserCliParams,
         model: &'a LlamaModel,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        /*
         // Initialize MTMD context
         let mtmd_params = MtmdContextParams {
             use_gpu: !params.no_gpu && !params.no_mmproj_offload,
@@ -138,7 +137,6 @@ impl<'a> ChatParserCliContext<'a> {
         };
 
         let mtmd_ctx = MtmdContext::init_from_file(&params.mmproj_path, model, &mtmd_params)?;
-        */
 
         let chat_template = model
             .chat_template(params.chat_template.as_deref())
@@ -147,7 +145,7 @@ impl<'a> ChatParserCliContext<'a> {
         let batch = LlamaBatch::new(params.n_tokens.get() as usize, 1);
 
         Ok(Self {
-            //mtmd_ctx,
+            mtmd_ctx,
             batch,
             bitmaps: Vec::new(),
             n_past: 0,
@@ -160,12 +158,9 @@ impl<'a> ChatParserCliContext<'a> {
     /// Loads media (image or audio) from the specified file path
     /// # Errors
     pub fn load_media(&mut self, path: &str) -> Result<(), MtmdBitmapError> {
-        /*
         let bitmap = MtmdBitmap::from_file(&self.mtmd_ctx, path, false)?;
         self.bitmaps.push(bitmap);
         Ok(())
-        */
-        unimplemented!("disabled for now")
     }
 
     /// Evaluates a chat message, tokenizing and processing it through the model
@@ -182,6 +177,7 @@ impl<'a> ChatParserCliContext<'a> {
             .with_add_generation_prompt(true)
             .with_enable_thinking(true)
             .with_messages(&[msg])
+            .with_add_bos(add_bos)
             .build();
 
         println!("Generation params: {:#?}", gen_params);
@@ -212,61 +208,12 @@ impl<'a> ChatParserCliContext<'a> {
         }
 
         // Tokenize the input
-        //let chunks = self.mtmd_ctx.tokenize(input_text, &bitmap_refs)?;
-        // tokenize the prompt
-        let n_len = 2048;
-        let tokens_list = model
-            .str_to_token(&chat_params.prompt(), AddBos::Always)
-            .map_err(|e| format!("failed to tokenize {:#?}: {e}", chat_params.prompt()))?;
-
-        let n_cxt = context.n_ctx() as i32;
-        let n_kv_req = tokens_list.len() as i32 + (n_len - tokens_list.len() as i32);
-
-        eprintln!("n_len = {n_len}, n_ctx = {n_cxt}, k_kv_req = {n_kv_req}");
-
-        // make sure the KV cache is big enough to hold all the prompt and generated tokens
-        if n_kv_req > n_cxt {
-            panic!(
-                "n_kv_req > n_ctx, the required kv cache size is not big enough
-either reduce n_len or increase n_ctx"
-            )
-        }
-
-        if tokens_list.len() >= usize::try_from(n_len)? {
-            panic!("the prompt is too long, it has more tokens than n_len")
-        }
-
-        // print the prompt token-by-token
-        eprintln!();
-
-        println!(
-            "Tokenization complete, {} chunks created",
-            tokens_list.len()
-        );
+        let chunks = self.mtmd_ctx.tokenize(input_text, &bitmap_refs)?;
 
         // Clear bitmaps after tokenization
         self.bitmaps.clear();
 
-        // create a llama_batch with size 512
-        // we use this object to submit token data for decoding
-        let mut batch = LlamaBatch::new(512, 1);
-
-        let last_index: i32 = (tokens_list.len() - 1) as i32;
-        for (i, token) in (0_i32..).zip(tokens_list.into_iter()) {
-            // llama_decode will output logits only for the last token of the prompt
-            let is_last = i == last_index;
-            batch.add(token, i, &[0], is_last)?;
-        }
-
-        context
-            .decode(&mut batch)
-            .map_err(|e| format!("llama_decode() failed: {e}"))?;
-
-        // main loop
-
-        self.n_past = batch.n_tokens();
-
-        //self.n_past = tokens_list.eval_chunks(&self.mtmd_ctx, context, 0, 0, batch_size, true)?;
+        self.n_past = chunks.eval_chunks(&self.mtmd_ctx, context, 0, 0, batch_size, true)?;
         Ok(())
     }
 
@@ -290,13 +237,11 @@ either reduce n_len or increase n_ctx"
             tool_call: Option<LlamaChatToolCall>,
         }
 
-        /*
         let mut parser = self
             .parser
             .take()
             .ok_or_else(|| ChatParserInitError::NullStateReturn)
             .map_err(|err| format!("Failed to create parser: {err:#?}"))?;
-        */
 
         for _i in 0..max_predict {
             // Sample next token
@@ -314,7 +259,7 @@ either reduce n_len or increase n_ctx"
             let piece = model.token_to_piece(token, &mut decoder, true, None)?;
 
             print!("{piece:?}");
-            /*
+
             if let Ok(diff) = parser.feed_piece(&piece) {
                 let mut chunk = StreamChunk {
                     content: "".into(),
@@ -331,7 +276,7 @@ either reduce n_len or increase n_ctx"
                     chunk.tool_call.replace(tools);
                 }
                 print!("{chunk:#?}");
-            }*/
+            }
 
             io::stdout().flush()?;
 
@@ -357,9 +302,10 @@ fn run_single_turn(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Add media marker if not present
     let mut prompt = params.prompt.clone();
+
     let default_marker = llama_cpp_2::mtmd::mtmd_default_marker().to_string();
     let media_marker = params.media_marker.as_ref().unwrap_or(&default_marker);
-    if !prompt.contains(media_marker) {
+    if (!params.images.is_empty() || !params.audio.is_empty()) && !prompt.contains(media_marker) {
         prompt.push_str(media_marker);
     }
 

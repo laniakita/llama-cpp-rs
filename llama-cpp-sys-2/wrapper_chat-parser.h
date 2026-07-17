@@ -145,8 +145,8 @@ typedef struct llama_rs_common_chat_params_view {
   const char **additional_stops;
   size_t n_additional_stops;
   const char *parser;
-  const struct llama_rs_common_chat_msg_span *message_spans;
-  size_t n_message_spans;
+  const struct llama_rs_common_chat_msg_delimiter *message_delimiters;
+  size_t n_message_delimiters;
 } llama_rs_chat_params_view;
 
 typedef struct llama_rs_common_grammar_trigger {
@@ -155,8 +155,17 @@ typedef struct llama_rs_common_grammar_trigger {
   llama_token token;
 } llama_rs_common_grammar_trigger;
 
-typedef struct llama_rs_common_chat_msg_span {
-  const char *role;
-  size_t pos;
-  size_t len;
-} llama_rs_common_chat_msg_span;
+typedef enum llama_rs_common_chat_role {
+  LLAMA_RS_COMMON_CHAT_ROLE_UNKNOWN,
+  LLAMA_RS_COMMON_CHAT_ROLE_SYSTEM,
+  LLAMA_RS_COMMON_CHAT_ROLE_ASSISTANT,
+  LLAMA_RS_COMMON_CHAT_ROLE_USER,
+  LLAMA_RS_COMMON_CHAT_ROLE_TOOL
+} llama_rs_common_chat_role;
+
+typedef struct llama_rs_common_chat_msg_delimiter {
+  enum llama_rs_common_chat_role role;
+  const char *delimiter;
+  const llama_token *tokens;
+  size_t n_tokens;
+} llama_rs_common_chat_msg_delimiter;
