@@ -444,17 +444,31 @@ llama_rs_common_chat_params_view_init(
     }
   }
 
-  llama_rs_common_chat_msg_span *spans_arr = nullptr;
-  if (!chat_params->message_spans.empty()) {
-    spans_arr = static_cast<llama_rs_common_chat_msg_span *>(
-        std::malloc(chat_params->message_spans.size() *
-                    sizeof(llama_rs_common_chat_msg_span)));
-    if (spans_arr) {
-      for (size_t i = 0; i < chat_params->message_spans.size(); ++i) {
-        spans_arr[i].role =
-            llama_rs_dup_string(chat_params->message_spans[i].role);
-        spans_arr[i].pos = chat_params->message_spans[i].pos;
-        spans_arr[i].len = chat_params->message_spans[i].len;
+  llama_rs_common_chat_msg_delimiter *delimiters_arr = nullptr;
+  if (!chat_params->message_delimiters.delimiters.empty()) {
+    delimiters_arr = static_cast<llama_rs_common_chat_msg_delimiter *>(
+        std::malloc(chat_params->message_delimiters.delimiters.size() *
+                    sizeof(llama_rs_common_chat_msg_delimiter)));
+    if (delimiters_arr) {
+      for (size_t i = 0; i < chat_params->message_delimiters.delimiters.size(); ++i) {
+        delimiters_arr[i].role =
+            llama_rs_common_chat_role(chat_params->message_delimiters.delimiters[i].role);
+        delimiters_arr[i].delimiter =
+            llama_rs_dup_string(chat_params->message_delimiters.delimiters[i].delimiter);
+        if (!chat_params->message_delimiters.delimiters[i].tokens.empty()) {
+          llama_token *tokens_arr = static_cast<llama_token *>(
+              std::malloc(chat_params->message_delimiters.delimiters[i].tokens.size() *
+                          sizeof(llama_token)));
+          if (tokens_arr) {
+            std::memcpy(tokens_arr, chat_params->message_delimiters.delimiters[i].tokens.data(),
+                        chat_params->message_delimiters.delimiters[i].tokens.size() * sizeof(llama_token));
+          }
+          delimiters_arr[i].tokens = tokens_arr;
+          delimiters_arr[i].n_tokens = chat_params->message_delimiters.delimiters[i].tokens.size();
+        } else {
+          delimiters_arr[i].tokens = nullptr;
+          delimiters_arr[i].n_tokens = 0;
+        }
       }
     }
   }
@@ -476,8 +490,8 @@ llama_rs_common_chat_params_view_init(
       llama_rs_dup_string_vector(chat_params->additional_stops);
   view->n_additional_stops = view->additional_stops ? chat_params->additional_stops.size() : 0;
   view->parser = llama_rs_dup_string(chat_params->parser);
-  view->message_spans = spans_arr;
-  view->n_message_spans = spans_arr ? chat_params->message_spans.size() : 0;
+  view->message_delimiters = delimiters_arr;
+  view->n_message_delimiters = delimiters_arr ? chat_params->message_delimiters.delimiters.size() : 0;
 
   return view;
 }
@@ -513,12 +527,15 @@ extern "C" void llama_rs_common_chat_params_view_free(
     std::free(view->additional_stops);
   }
   llama_rs_string_free(const_cast<char *>(view->parser));
-  if (view->message_spans) {
-    for (size_t i = 0; i < view->n_message_spans; ++i) {
-      llama_rs_string_free(const_cast<char *>(view->message_spans[i].role));
+  if (view->message_delimiters) {
+    for (size_t i = 0; i < view->n_message_delimiters; ++i) {
+      llama_rs_string_free(const_cast<char *>(view->message_delimiters[i].delimiter));
+      if (view->message_delimiters[i].tokens) {
+        std::free(const_cast<llama_token *>(view->message_delimiters[i].tokens));
+      }
     }
-    std::free(const_cast<struct llama_rs_common_chat_msg_span *>(
-        view->message_spans));
+    std::free(const_cast<struct llama_rs_common_chat_msg_delimiter *>(
+        view->message_delimiters));
   }
 
   delete reinterpret_cast<struct llama_rs_common_chat_params_view *>(view);
