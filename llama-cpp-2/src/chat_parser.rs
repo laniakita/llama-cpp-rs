@@ -9,19 +9,31 @@ use llama_cpp_sys_2::{
     llama_rs_chat_msg_diff_view_init, llama_rs_chat_msg_diffs_len, llama_rs_chat_parser,
     llama_rs_chat_parser_feed, llama_rs_chat_parser_free, llama_rs_chat_parser_init,
     llama_rs_chat_template_generation_params, llama_rs_common_chat_continuation,
-    llama_rs_common_chat_msg_diffs, llama_rs_common_chat_msg_diffs_free,
-    llama_rs_common_chat_msg_diffs_init, llama_rs_common_chat_params,
-    llama_rs_common_chat_params_free, llama_rs_common_chat_params_view,
-    llama_rs_common_chat_params_view_free, llama_rs_common_chat_params_view_init,
-    llama_rs_common_reasoning_format, llama_rs_status, LLAMA_RS_COMMON_CHAT_CONTINUATION_AUTO,
-    LLAMA_RS_COMMON_CHAT_CONTINUATION_CONTENT, LLAMA_RS_COMMON_CHAT_CONTINUATION_NONE,
-    LLAMA_RS_COMMON_CHAT_CONTINUATION_REASONING, LLAMA_RS_COMMON_REASONING_FORMAT_AUTO,
+    llama_rs_common_chat_format, llama_rs_common_chat_msg_diffs,
+    llama_rs_common_chat_msg_diffs_free, llama_rs_common_chat_msg_diffs_init,
+    llama_rs_common_chat_params, llama_rs_common_chat_params_free,
+    llama_rs_common_chat_params_view, llama_rs_common_chat_params_view_free,
+    llama_rs_common_chat_params_view_init, llama_rs_common_chat_role,
+    llama_rs_common_grammar_trigger_type, llama_rs_common_reasoning_format, llama_rs_status,
+    LLAMA_RS_COMMON_CHAT_CONTINUATION_AUTO, LLAMA_RS_COMMON_CHAT_CONTINUATION_CONTENT,
+    LLAMA_RS_COMMON_CHAT_CONTINUATION_NONE, LLAMA_RS_COMMON_CHAT_CONTINUATION_REASONING,
+    LLAMA_RS_COMMON_CHAT_FORMAT_CONTENT_ONLY, LLAMA_RS_COMMON_CHAT_FORMAT_COUNT,
+    LLAMA_RS_COMMON_CHAT_FORMAT_PEG_GEMMA4, LLAMA_RS_COMMON_CHAT_FORMAT_PEG_NATIVE,
+    LLAMA_RS_COMMON_CHAT_FORMAT_PEG_SIMPLE, LLAMA_RS_COMMON_CHAT_ROLE_ASSISTANT,
+    LLAMA_RS_COMMON_CHAT_ROLE_SYSTEM, LLAMA_RS_COMMON_CHAT_ROLE_TOOL,
+    LLAMA_RS_COMMON_CHAT_ROLE_UNKNOWN, LLAMA_RS_COMMON_CHAT_ROLE_USER,
+    LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN,
+    LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL, LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN,
+    LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_WORD, LLAMA_RS_COMMON_REASONING_FORMAT_AUTO,
     LLAMA_RS_COMMON_REASONING_FORMAT_DEEPSEEK, LLAMA_RS_COMMON_REASONING_FORMAT_DEEPSEEK_LEGACY,
     LLAMA_RS_COMMON_REASONING_FORMAT_NONE, LLAMA_RS_STATUS_EXCEPTION,
     LLAMA_RS_STATUS_INVALID_ARGUMENT, LLAMA_RS_STATUS_OK,
 };
 
-use crate::model::{LlamaChatMessageFull, LlamaChatTool, LlamaChatToolCall, LlamaModel};
+use crate::{
+    model::{LlamaChatMessageFull, LlamaChatTool, LlamaChatToolCall, LlamaModel},
+    token::LlamaToken,
+};
 
 /// Errors that can occur when initializing the ChatParser
 #[derive(Debug, thiserror::Error)]
@@ -90,7 +102,10 @@ impl ChatParser {
     ///
     /// # Errors
     /// Returns `ChatParserFeedError` if the C++ engine fails.
-    pub fn feed_piece<'a>(&'a mut self, piece: &str) -> Result<Vec<ChatDiff<'a>>, ChatParserFeedError> {
+    pub fn feed_piece<'a>(
+        &'a mut self,
+        piece: &str,
+    ) -> Result<Vec<ChatDiff<'a>>, ChatParserFeedError> {
         let mut diffs_ptr = ptr::null_mut();
         let diffs_res: llama_rs_status = unsafe {
             llama_rs_chat_parser_feed(self.ptr, CString::new(piece)?.as_ptr(), &mut diffs_ptr)
@@ -220,7 +235,9 @@ impl<'a> ChatDiff<'a> {
             if ptr.is_null() {
                 None
             } else {
-                Some(Cow::Owned(CStr::from_ptr(ptr).to_string_lossy().into_owned()))
+                Some(Cow::Owned(
+                    CStr::from_ptr(ptr).to_string_lossy().into_owned(),
+                ))
             }
         }
     }
@@ -265,6 +282,109 @@ impl LlamaChatParams {
             .to_str()
             .unwrap_or("")
     }
+
+    /// Returns a view of the chat params.
+    pub fn view(&self) -> LlamaChatParamsView {
+        let get_cstring = |ptr: *const i8| -> CString {
+            unsafe {
+                if ptr.is_null() {
+                    CString::default()
+                } else {
+                    CStr::from_ptr(ptr).to_owned()
+                }
+            }
+        };
+        let grammar_triggers = unsafe {
+            if (*self.view).n_grammar_triggers > 0
+                && !(*self.view).n_grammar_triggers < i32::MAX as usize
+            {
+                let triggers_slice = std::slice::from_raw_parts(
+                    (*self.view).grammar_triggers,
+                    (*self.view).n_grammar_triggers as usize,
+                );
+                triggers_slice
+                    .iter()
+                    .map(|t| LlamaGrammarTrigger {
+                        trigger_type: t.type_.into(),
+                        value: get_cstring(t.value),
+                        token: LlamaToken(t.token),
+                    })
+                    .collect::<Vec<LlamaGrammarTrigger>>()
+            } else {
+                Vec::new()
+            }
+        };
+
+        let message_delimiters = unsafe {
+            if (*self.view).n_message_delimiters > 0
+                && !(*self.view).n_message_delimiters < i32::MAX as usize
+            {
+                std::slice::from_raw_parts(
+                    (*self.view).message_delimiters,
+                    (*self.view).n_message_delimiters as usize,
+                )
+                .iter()
+                .map(|md| LlamaChatMsgDelimiter {
+                    role: md.role.into(),
+                    delimiter: get_cstring(md.delimiter),
+                    tokens: std::slice::from_raw_parts((*md).tokens, (*md).n_tokens)
+                        .iter()
+                        .map(|t| LlamaToken(*t))
+                        .collect::<Vec<LlamaToken>>(),
+                })
+                .collect::<Vec<LlamaChatMsgDelimiter>>()
+            } else {
+                Vec::new()
+            }
+        };
+        let preserved_tokens = unsafe {
+            if (*self.view).n_preserved_tokens > 0
+                && !(*self.view).n_preserved_tokens > i32::MAX as usize
+            {
+                std::slice::from_raw_parts(
+                    (*self.view).preserved_tokens,
+                    (*self.view).n_preserved_tokens as usize,
+                )
+                .iter()
+                .map(|t| get_cstring(*t))
+                .collect::<Vec<CString>>()
+            } else {
+                Vec::new()
+            }
+        };
+        let additional_stops = unsafe {
+            if (*self.view).n_additional_stops > 0
+                && !(*self.view).n_additional_stops > i32::MAX as usize
+            {
+                std::slice::from_raw_parts(
+                    (*self.view).additional_stops,
+                    (*self.view).n_additional_stops as usize,
+                )
+                .iter()
+                .map(|t| get_cstring(*t))
+                .collect::<Vec<CString>>()
+            } else {
+                Vec::new()
+            }
+        };
+        unsafe {
+            LlamaChatParamsView {
+                format: (*self.view).format.into(),
+                prompt: get_cstring((*self.view).prompt),
+                grammar: get_cstring((*self.view).grammar),
+                grammar_lazy: (*self.view).grammar_lazy,
+                generation_prompt: get_cstring((*self.view).generation_prompt),
+                supports_thinking: (*self.view).supports_thinking,
+                thinking_start_tag: get_cstring((*self.view).thinking_start_tag),
+                thinking_end_tag: get_cstring((*self.view).thinking_end_tag),
+                grammar_triggers,
+                preserved_tokens,
+                additional_stops,
+                parser: get_cstring((*self.view).parser),
+                message_delimiters,
+            }
+        }
+    }
 }
 
 impl Drop for LlamaChatParams {
@@ -274,6 +394,121 @@ impl Drop for LlamaChatParams {
             llama_rs_common_chat_params_view_free(self.view)
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LlamaChatFormat {
+    ///These are intended to be parsed by the PEG parser
+    #[default]
+    ContentOnly = 0,
+    /// These are intended to be parsed by the PEG parser
+    PegSimple = 1,
+    /// These are intended to be parsed by the PEG parser
+    PegNative = 2,
+    /// These are intended to be parsed by the PEG parser
+    PegGemma4 = 3,
+    /// Not a format, just the # formats"]
+    Count = 4,
+}
+
+impl From<llama_rs_common_chat_format> for LlamaChatFormat {
+    fn from(value: llama_rs_common_chat_format) -> Self {
+        match value {
+            LLAMA_RS_COMMON_CHAT_FORMAT_CONTENT_ONLY => Self::ContentOnly,
+            LLAMA_RS_COMMON_CHAT_FORMAT_PEG_SIMPLE => Self::PegSimple,
+            LLAMA_RS_COMMON_CHAT_FORMAT_PEG_NATIVE => Self::PegNative,
+            LLAMA_RS_COMMON_CHAT_FORMAT_PEG_GEMMA4 => Self::PegGemma4,
+            LLAMA_RS_COMMON_CHAT_FORMAT_COUNT => Self::Count,
+            _ => Self::default(),
+        }
+    }
+}
+
+/// Enum for `common_grammar_trigger_type`
+#[derive(Debug, Clone, Copy, Default)]
+pub enum LlamaGrammarTriggerType {
+    #[default]
+    /// Trigger grammar at a token boundary.
+    Token,
+    /// Trigger grammar at a word boundary.
+    Word,
+    /// Trigger grammar at the start of a pattern.
+    Pattern,
+    /// Trigger grammar at the end of a pattern.
+    PatternFull,
+}
+
+impl From<llama_rs_common_grammar_trigger_type> for LlamaGrammarTriggerType {
+    fn from(value: llama_rs_common_grammar_trigger_type) -> Self {
+        match value {
+            LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN => Self::Token,
+            LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_WORD => Self::Word,
+            LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN => Self::Pattern,
+            LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL => Self::PatternFull,
+            _ => Self::default(),
+        }
+    }
+}
+
+/// Safe struct for `common_grammar_trigger`
+#[derive(Debug, Clone)]
+pub struct LlamaGrammarTrigger {
+    /// The type of grammar trigger.
+    pub trigger_type: LlamaGrammarTriggerType,
+    /// The value of the grammar trigger.
+    pub value: CString,
+    /// The token that triggers the grammar.
+    pub token: LlamaToken,
+}
+/// Enum for `common_chat_role`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LlamaChatRole {
+    #[default]
+    UNKNOWN,
+    SYSTEM,
+    ASSISTANT,
+    USER,
+    TOOL,
+}
+
+impl From<llama_rs_common_chat_role> for LlamaChatRole {
+    fn from(value: llama_rs_common_chat_role) -> Self {
+        match value {
+            LLAMA_RS_COMMON_CHAT_ROLE_UNKNOWN => Self::UNKNOWN,
+            LLAMA_RS_COMMON_CHAT_ROLE_SYSTEM => Self::SYSTEM,
+            LLAMA_RS_COMMON_CHAT_ROLE_ASSISTANT => Self::ASSISTANT,
+            LLAMA_RS_COMMON_CHAT_ROLE_USER => Self::USER,
+            LLAMA_RS_COMMON_CHAT_ROLE_TOOL => Self::TOOL,
+            _ => Self::UNKNOWN,
+        }
+    }
+}
+
+/// Safe struct for `common_chat_msg_delimiter`
+#[derive(Debug, Clone)]
+pub struct LlamaChatMsgDelimiter {
+    pub role: LlamaChatRole,
+    pub delimiter: CString,
+    pub tokens: Vec<LlamaToken>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LlamaChatParamsView {
+    pub format: LlamaChatFormat,
+    pub prompt: CString,
+    pub grammar: CString,
+    pub grammar_lazy: bool,
+    pub generation_prompt: CString,
+    pub supports_thinking: bool,
+    /// " e.g., \"<think>\""
+    pub thinking_start_tag: CString,
+    /// e.g., \"</think>\""
+    pub thinking_end_tag: CString,
+    pub grammar_triggers: Vec<LlamaGrammarTrigger>,
+    pub preserved_tokens: Vec<CString>,
+    pub additional_stops: Vec<CString>,
+    pub parser: CString,
+    pub message_delimiters: Vec<LlamaChatMsgDelimiter>,
 }
 
 /// Convenience struct which gets converted to `generation_params`.
