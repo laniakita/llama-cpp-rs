@@ -19,9 +19,7 @@ use llama_cpp_2::mtmd::{
 };
 
 use llama_cpp_2::llama_backend::LlamaBackend;
-use llama_cpp_2::model::{
-    LlamaChatMessageFull, LlamaChatTemplate, LlamaChatTool, LlamaChatToolCall, LlamaModel,
-};
+use llama_cpp_2::model::{LlamaChatMessageFull, LlamaChatTemplate, LlamaChatToolCall, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
 /// Command line parameters for the ChatParser CLI application

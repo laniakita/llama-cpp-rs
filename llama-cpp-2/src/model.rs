@@ -1034,7 +1034,7 @@ impl LlamaModel {
         tmpl: Option<&LlamaChatTemplate>,
         params: &LlamaGenerationParams,
     ) -> Result<LlamaChatParams, ApplyChatTemplateErrorFull> {
-        let mut gen_params_state = params.into_state()?;
+        let mut gen_params_state = params.into_ptr()?;
 
         let out_chat_params: *mut llama_cpp_sys_2::llama_rs_common_chat_params =
             unsafe { llama_cpp_sys_2::llama_rs_common_chat_params_init() };
@@ -1043,23 +1043,21 @@ impl LlamaModel {
             llama_cpp_sys_2::llama_rs_chat_apply_template_with_params(
                 self.model.as_ptr(),
                 tmpl.map_or(ptr::null(), |t| t.as_c_str().as_ptr()),
-                &mut gen_params_state.params,
+                gen_params_state.get(),
                 out_chat_params,
             )
         };
 
         match res_status {
-            llama_cpp_sys_2::LLAMA_RS_STATUS_OK => {
-                match LlamaChatParams::new(out_chat_params) {
-                    Ok(params) => Ok(params),
-                    Err(e) => {
-                        unsafe {
-                            llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
-                        }
-                        Err(e.into())
+            llama_cpp_sys_2::LLAMA_RS_STATUS_OK => match LlamaChatParams::new(out_chat_params) {
+                Ok(params) => Ok(params),
+                Err(e) => {
+                    unsafe {
+                        llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
                     }
+                    Err(e.into())
                 }
-            }
+            },
             llama_cpp_sys_2::LLAMA_RS_STATUS_INVALID_ARGUMENT => {
                 unsafe {
                     llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);

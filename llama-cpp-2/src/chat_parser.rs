@@ -1,16 +1,16 @@
 use std::{
     borrow::Cow,
-    ffi::{CStr, CString, FromBytesWithNulError, NulError},
+    ffi::{c_char, CStr, CString, NulError},
     ptr,
 };
 
 use llama_cpp_sys_2::{
-    llama_rs_chat_msg_diff_get_view, llama_rs_chat_msg_diff_view, llama_rs_chat_msg_diff_view_free,
-    llama_rs_chat_msg_diff_view_init, llama_rs_chat_msg_diffs_len, llama_rs_chat_parser,
-    llama_rs_chat_parser_feed, llama_rs_chat_parser_free, llama_rs_chat_parser_init,
-    llama_rs_chat_template_generation_params, llama_rs_common_chat_continuation,
-    llama_rs_common_chat_format, llama_rs_common_chat_msg_diffs,
-    llama_rs_common_chat_msg_diffs_free, llama_rs_common_chat_msg_diffs_init,
+    llama_rs_chat_message, llama_rs_chat_msg_diff_get_view, llama_rs_chat_msg_diff_view,
+    llama_rs_chat_msg_diff_view_free, llama_rs_chat_msg_diff_view_init,
+    llama_rs_chat_msg_diffs_len, llama_rs_chat_parser, llama_rs_chat_parser_feed,
+    llama_rs_chat_parser_free, llama_rs_chat_parser_init, llama_rs_chat_template_generation_params,
+    llama_rs_chat_tool_call, llama_rs_common_chat_continuation, llama_rs_common_chat_format,
+    llama_rs_common_chat_msg_diffs, llama_rs_common_chat_msg_diffs_free,
     llama_rs_common_chat_params, llama_rs_common_chat_params_free,
     llama_rs_common_chat_params_view, llama_rs_common_chat_params_view_free,
     llama_rs_common_chat_params_view_init, llama_rs_common_chat_role,
@@ -31,30 +31,36 @@ use llama_cpp_sys_2::{
 };
 
 use crate::{
-    model::{LlamaChatMessageFull, LlamaChatTool, LlamaChatToolCall, LlamaModel},
+    model::{LlamaChatMessageFull, LlamaChatTool, LlamaChatToolCall},
     token::LlamaToken,
 };
 
 /// Errors that can occur when initializing the ChatParser
 #[derive(Debug, thiserror::Error)]
 pub enum ChatParserInitError {
+    /// Failed to initialize parser parameters: C++ returned a null pointer.
     #[error("Failed to initialize parser parameters: C++ returned a null pointer")]
     NullParamsReturn,
+    /// Failed to allocate initial chat message state.
     #[error("Failed to allocate initial chat message state")]
     NullStateReturn,
+    /// Failed to convert a string to a CString.
     #[error("{0}")]
     NulError(#[from] NulError),
 }
 /// Errors that can occur while feeding tokens into the parser
 #[derive(Debug, thiserror::Error)]
 pub enum ChatParserFeedError {
+    /// Invalid argument passed to the Llama.cpp parser.
     #[error("Invalid argument passed to the Llama.cpp parser")]
     InvalidArgument,
+    /// Exception thrown by the Llama.cpp parser.
     #[error("Exception thrown by the Llama.cpp parser")]
     Exception,
-
+    /// Failed to convert a string to a CString.
     #[error("{0}")]
     NulError(#[from] NulError),
+    /// Failed to compute diffs for a chat message.
     #[error("{0}")]
     ChatDiffCreationError(#[from] ChatDiffCreationError),
 }
@@ -85,9 +91,8 @@ impl ChatParser {
         // Under the hood, LlamaChatParams is now just a safe wrapper around
         // *mut llama_rs_common_chat_params. We pass its pointer down to the C++
         // engine initialization!
-        let mut gen_params_state = generation_params.into_state()?;
-        let ptr =
-            unsafe { llama_rs_chat_parser_init(chat_params.ptr, &mut gen_params_state.params) };
+        let mut gen_params_state = generation_params.clone().into_ptr()?;
+        let ptr = unsafe { llama_rs_chat_parser_init(chat_params.ptr, gen_params_state.get()) };
         if ptr.is_null() {
             return Err(ChatParserInitError::NullStateReturn);
         }
@@ -255,8 +260,10 @@ impl<'a> Drop for ChatDiff<'a> {
     }
 }
 
+/// Errors in creating a `LlamaChatParams`
 #[derive(Debug, thiserror::Error)]
 pub enum ChatParamsCreationError {
+    /// Failed to create chat params view.
     #[error("Failed to create chat params view")]
     ViewCreationFailed,
 }
@@ -264,11 +271,14 @@ pub enum ChatParamsCreationError {
 /// Safe wrapper around `common_chat_params`.
 #[derive(Debug, Clone)]
 pub struct LlamaChatParams {
+    /// Raw pointer to `common_chat_params`.
     pub ptr: *mut llama_rs_common_chat_params,
+    /// Raw point to a view of the `common_chat_params`.
     pub view: *mut llama_rs_common_chat_params_view,
 }
 
 impl LlamaChatParams {
+    /// Creates a new `LlamaChatParams` from a raw pointer + a view to it.
     pub fn new(ptr: *mut llama_rs_common_chat_params) -> Result<Self, ChatParamsCreationError> {
         let view_ptr = unsafe { llama_rs_common_chat_params_view_init(ptr) };
         if view_ptr.is_null() {
@@ -287,7 +297,7 @@ impl LlamaChatParams {
             .unwrap_or("")
     }
 
-    /// Returns a view of the chat params.
+    /// Returns a safe Rust view of the chat params view.
     pub fn view(&self) -> LlamaChatParamsView {
         let get_cstring = |ptr: *const i8| -> CString {
             unsafe {
@@ -318,7 +328,6 @@ impl LlamaChatParams {
                 Vec::new()
             }
         };
-
         let message_delimiters = unsafe {
             if (*self.view).n_message_delimiters > 0
                 && !(*self.view).n_message_delimiters < i32::MAX as usize
@@ -400,6 +409,7 @@ impl Drop for LlamaChatParams {
     }
 }
 
+/// Format variant for chat
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LlamaChatFormat {
     ///These are intended to be parsed by the PEG parser
@@ -467,11 +477,16 @@ pub struct LlamaGrammarTrigger {
 /// Enum for `common_chat_role`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LlamaChatRole {
+    /// Unknown chat role
     #[default]
     UNKNOWN,
+    /// System role
     SYSTEM,
+    /// Assistant role
     ASSISTANT,
+    /// User role
     USER,
+    /// Tool role
     TOOL,
 }
 
@@ -491,27 +506,42 @@ impl From<llama_rs_common_chat_role> for LlamaChatRole {
 /// Safe struct for `common_chat_msg_delimiter`
 #[derive(Debug, Clone)]
 pub struct LlamaChatMsgDelimiter {
+    /// The message's role.
     pub role: LlamaChatRole,
+    /// The delimiter.
     pub delimiter: CString,
+    /// The tokens in a message
     pub tokens: Vec<LlamaToken>,
 }
 
+/// Safe struct for `common_chat_params_view`
 #[derive(Debug, Clone)]
 pub struct LlamaChatParamsView {
+    /// Chat format
     pub format: LlamaChatFormat,
+    /// Formatted prompt.
     pub prompt: CString,
+    /// Grammar constraint.
     pub grammar: CString,
+    /// Whether the grammar is lazy (will be triggered by tokens).
     pub grammar_lazy: bool,
+    /// Generation prompt.
     pub generation_prompt: CString,
+    /// Whether the model supports thinking.
     pub supports_thinking: bool,
     /// " e.g., \"<think>\""
     pub thinking_start_tag: CString,
     /// e.g., \"</think>\""
     pub thinking_end_tag: CString,
+    /// Grammar triggers.
     pub grammar_triggers: Vec<LlamaGrammarTrigger>,
+    /// Think tags, tool call tags, etc.
     pub preserved_tokens: Vec<CString>,
+    /// Additional stop strings.
     pub additional_stops: Vec<CString>,
+    /// Parser (used to load the PEG Arena).
     pub parser: CString,
+    /// Message delimiters.
     pub message_delimiters: Vec<LlamaChatMsgDelimiter>,
 }
 
@@ -539,14 +569,14 @@ pub struct LlamaGenerationParams {
     pub continue_final_message: LlamaChatContinuation,
 
     /// Stringified JSON object for Jinja kwargs
-    pub extra_context: Option<String>,
+    pub extra_context: Option<CString>,
 
     /// Stringified JSON schema for constrained output
     /// - If grammar is set, this will be ignored.
-    pub json_schema: Option<String>,
+    pub json_schema: Option<CString>,
     /// Grammar to use for constrained output
     /// - If this is set, `json_schema` will be ignored.
-    pub grammar: Option<String>,
+    pub grammar: Option<CString>,
 
     /// Enable parallel tool calls.
     /// - Defaults to `true`.
@@ -557,6 +587,25 @@ pub struct LlamaGenerationParams {
     /// Add end of sentence token.
     /// - Defaults to `false`.
     pub add_eos: bool,
+}
+
+/// Safe wrapper around `llama_rs_chat_template_generation_params`.
+#[derive(Debug)]
+pub struct LlamaGenerationParamsPtr {
+    ptr: llama_rs_chat_template_generation_params,
+    _msgs_tool_calls: Vec<Vec<llama_cpp_sys_2::llama_rs_chat_tool_call>>,
+    _msgs: Vec<llama_cpp_sys_2::llama_rs_chat_message>,
+    _tools: Vec<llama_cpp_sys_2::llama_rs_chat_tool>,
+    _extra_context: Option<CString>,
+    _json_schema: Option<CString>,
+    _grammar: Option<CString>,
+}
+
+impl LlamaGenerationParamsPtr {
+    /// Gets a mutable pointer to the raw llama_rs_chat_template_generation_parmams.
+    pub fn get(&mut self) -> *mut llama_rs_chat_template_generation_params {
+        &mut self.ptr
+    }
 }
 
 impl LlamaGenerationParams {
@@ -577,72 +626,54 @@ impl LlamaGenerationParams {
             add_eos: false,
         }
     }
-}
 
-#[derive(Debug)]
-pub struct LlamaGenerationParamsState {
-    pub params: llama_cpp_sys_2::llama_rs_chat_template_generation_params,
-    _msgs_tool_calls: Vec<Vec<llama_cpp_sys_2::llama_rs_chat_tool_call>>,
-    _msgs: Vec<llama_cpp_sys_2::llama_rs_chat_message>,
-    _tools: Vec<llama_cpp_sys_2::llama_rs_chat_tool>,
-    _extra_context: Option<CString>,
-    _json_schema: Option<CString>,
-    _grammar: Option<CString>,
-}
-
-impl LlamaGenerationParams {
-    /// Creates a state object holding [llama_rs_chat_template_generation_params] and its owned strings/buffers.
-    pub fn into_state(&self) -> Result<LlamaGenerationParamsState, std::ffi::NulError> {
+    /// Creates an owned pointer to `llama_rs_chat_template_generation_params`.
+    pub fn into_ptr(&self) -> Result<LlamaGenerationParamsPtr, NulError> {
+        let get_ptr = |cstr: &CString| -> *const c_char {
+            if cstr.is_empty() {
+                ptr::null_mut()
+            } else {
+                cstr.as_ptr()
+            }
+        };
         let mut msgs_tool_calls = Vec::new();
-        let msgs = self
+        let msgs: Vec<llama_rs_chat_message> = self
             .messages
             .iter()
             .map(|c| {
                 let tool_calls = c
                     .tool_calls
                     .iter()
-                    .map(|tc| llama_cpp_sys_2::llama_rs_chat_tool_call {
-                        name: tc.name.as_ptr(),
-                        id: tc.id.as_ptr(),
-                        arguments: tc.arguments.as_ptr(),
+                    .map(|tc| llama_rs_chat_tool_call {
+                        name: get_ptr(&tc.name),
+                        id: get_ptr(&tc.id),
+                        arguments: get_ptr(&tc.arguments),
                     })
-                    .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_tool_call>>();
+                    .collect::<Vec<llama_rs_chat_tool_call>>();
                 let tool_calls_ptr = tool_calls.as_ptr();
                 msgs_tool_calls.push(tool_calls);
-                llama_cpp_sys_2::llama_rs_chat_message {
-                    role: c.role.as_ptr(),
-                    content: c.content.as_ptr(),
-                    reasoning_content: if c.reasoning_content.is_empty() {
-                        ptr::null_mut()
-                    } else {
-                        c.reasoning_content.as_ptr()
-                    },
-                    tool_name: if c.tool_name.is_empty() {
-                        ptr::null_mut()
-                    } else {
-                        c.tool_name.as_ptr()
-                    },
-                    tool_call_id: if c.tool_call_id.is_empty() {
-                        ptr::null_mut()
-                    } else {
-                        c.tool_call_id.as_ptr()
-                    },
+                llama_rs_chat_message {
+                    role: get_ptr(&c.role),
+                    content: get_ptr(&c.content),
+                    reasoning_content: get_ptr(&c.reasoning_content),
+                    tool_name: get_ptr(&c.tool_name),
+                    tool_call_id: get_ptr(&c.tool_call_id),
                     tool_calls: tool_calls_ptr,
                     n_tool_calls: c.tool_calls.len(),
                 }
             })
-            .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_message>>();
+            .collect::<Vec<_>>();
         let tools = self
             .tools
             .iter()
             .map(|t| llama_cpp_sys_2::llama_rs_chat_tool {
-                name: t.name.as_ptr(),
-                description: t.description.as_ptr(),
-                parameters: t.parameters.as_ptr(),
+                name: get_ptr(&t.name),
+                description: get_ptr(&t.description),
+                parameters: get_ptr(&t.parameters),
             })
             .collect::<Vec<llama_cpp_sys_2::llama_rs_chat_tool>>();
 
-        let mut params = llama_cpp_sys_2::llama_rs_chat_template_generation_params {
+        let mut ptr = llama_rs_chat_template_generation_params {
             messages: msgs.as_ptr(),
             n_messages: msgs.len(),
             tools: tools.as_ptr(),
@@ -651,39 +682,32 @@ impl LlamaGenerationParams {
             enable_thinking: self.enable_thinking,
             reasoning_format: self.reasoning_format.into(),
             continue_final_message: self.continue_final_message.into(),
-            extra_context: ptr::null(),
-            json_schema: ptr::null(),
-            grammar: ptr::null(),
+            extra_context: ptr::null_mut(),
+            json_schema: ptr::null_mut(),
+            grammar: ptr::null_mut(),
             parallel_tool_calls: self.parallel_tool_calls,
             add_bos: self.add_bos,
             add_eos: self.add_eos,
         };
 
-        let extra_context = match &self.extra_context {
-            Some(ctx) => Some(CString::new(ctx.as_bytes())?),
-            None => None,
-        };
-        let json_schema = match &self.json_schema {
-            Some(js) => Some(CString::new(js.as_bytes())?),
-            None => None,
-        };
-        let grammar = match &self.grammar {
-            Some(grm) => Some(CString::new(grm.as_bytes())?),
-            None => None,
-        };
+        ptr.extra_context = self
+            .extra_context
+            .as_ref()
+            .map_or(ptr::null(), |c| c.as_ptr());
+        ptr.json_schema = self
+            .json_schema
+            .as_ref()
+            .map_or(ptr::null(), |c| c.as_ptr());
+        ptr.grammar = self.grammar.as_ref().map_or(ptr::null(), |c| c.as_ptr());
 
-        params.extra_context = extra_context.as_ref().map_or(ptr::null(), |c| c.as_ptr());
-        params.json_schema = json_schema.as_ref().map_or(ptr::null(), |c| c.as_ptr());
-        params.grammar = grammar.as_ref().map_or(ptr::null(), |c| c.as_ptr());
-
-        Ok(LlamaGenerationParamsState {
-            params,
+        Ok(LlamaGenerationParamsPtr {
+            ptr,
             _msgs_tool_calls: msgs_tool_calls,
             _msgs: msgs,
             _tools: tools,
-            _extra_context: extra_context,
-            _json_schema: json_schema,
-            _grammar: grammar,
+            _extra_context: self.extra_context.clone(),
+            _json_schema: self.json_schema.clone(),
+            _grammar: self.grammar.clone(),
         })
     }
 }
@@ -730,14 +754,14 @@ pub struct LlamaGenerationParamsBuilder {
     pub continue_final_message: Option<LlamaChatContinuation>,
 
     /// Stringified JSON object for Jinja kwargs
-    pub extra_context: Option<String>,
+    pub extra_context: Option<CString>,
 
     /// Stringified JSON schema for constrained output
     /// - If grammar is set, this will be ignored.
-    pub json_schema: Option<String>,
+    pub json_schema: Option<CString>,
     /// Grammar to use for constrained output
     /// - If this is set, `json_schema` will be ignored.
-    pub grammar: Option<String>,
+    pub grammar: Option<CString>,
 
     /// Enable parallel tool calls.
     /// - Defaults to `true`.
@@ -805,7 +829,7 @@ impl LlamaGenerationParamsBuilder {
     /// Set the extra context to use for this generation.
     /// - Defaults to `None`
     pub fn with_extra_context(mut self, extra_context: &str) -> Self {
-        self.extra_context = Some(extra_context.to_string());
+        self.extra_context = Some(CString::new(extra_context).unwrap_or_default());
         self
     }
 
@@ -813,7 +837,7 @@ impl LlamaGenerationParamsBuilder {
     /// - If grammar is set, this will be ignored.
     /// - Defaults to `None`
     pub fn with_json_schema(mut self, json_schema: &str) -> Self {
-        self.json_schema = Some(json_schema.to_string());
+        self.json_schema = Some(CString::new(json_schema).unwrap_or_default());
         self
     }
 
@@ -821,7 +845,7 @@ impl LlamaGenerationParamsBuilder {
     /// - If this is set, `json_schema` will be ignored.
     /// - Defaults to `None`
     pub fn with_grammar(mut self, grammar: &str) -> Self {
-        self.grammar = Some(grammar.to_string());
+        self.grammar = Some(CString::new(grammar).unwrap_or_default());
         self
     }
 
@@ -876,12 +900,22 @@ impl LlamaGenerationParamsBuilder {
 }
 
 /// Chat continuation method provided via `with_continue_final_message`. Only used by [ChatParser].
+///
+/// This enum determines how content is resumed following a partial generation.
+///
+/// See the below for more details and inspiration:
+/// - `chat_parse`: https://github.com/ggml-org/llama.cpp/blob/86a9c79f866799eb0e7e89c03578ccfbcc5d808e/common/chat.cpp#L2859
+/// - `server-task.cpp`: https://github.com/ggml-org/llama.cpp/blob/86a9c79f866799eb0e7e89c03578ccfbcc5d808e/tools/server/server-task.cpp#L158
 #[derive(Debug, Clone, Copy, Default)]
 pub enum LlamaChatContinuation {
+    /// Don't resume the final message (eg new prompt)
     #[default]
     NONE,
+    /// Auto resume either reasoning or content generation.
     AUTO,
+    /// Resume reasoning generation.
     REASONING,
+    /// Resume content generation.
     CONTENT,
 }
 
