@@ -260,22 +260,24 @@ impl<'a> ChatParserCliContext<'a> {
 
             print!("{piece:?}");
 
-            if let Ok(diff) = parser.feed_piece(&piece) {
-                let mut chunk = StreamChunk {
-                    content: "".into(),
-                    reasoning: "".into(),
-                    tool_call: None,
-                };
-                if let Some(reasoning) = diff.reasoning() {
-                    chunk.reasoning = reasoning;
+            if let Ok(diffs) = parser.feed_piece(&piece) {
+                for diff in diffs {
+                    let mut chunk = StreamChunk {
+                        content: "".into(),
+                        reasoning: "".into(),
+                        tool_call: None,
+                    };
+                    if let Some(reasoning) = diff.reasoning() {
+                        chunk.reasoning = reasoning;
+                    }
+                    if let Some(content) = diff.content() {
+                        chunk.content = content;
+                    }
+                    if let Some(tools) = diff.tool_call() {
+                        chunk.tool_call.replace(tools);
+                    }
+                    print!("{chunk:#?}");
                 }
-                if let Some(content) = diff.content() {
-                    chunk.content = content;
-                }
-                if let Some(tools) = diff.tool_call() {
-                    chunk.tool_call.replace(tools);
-                }
-                print!("{chunk:#?}");
             }
 
             io::stdout().flush()?;

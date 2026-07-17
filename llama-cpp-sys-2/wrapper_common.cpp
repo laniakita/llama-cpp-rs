@@ -544,6 +544,7 @@ extern "C" void llama_rs_common_chat_params_view_free(
 struct llama_rs_chat_parser {
   common_chat_parser_params params;
   common_chat_msg msg_state;
+  std::string generated_text;
 };
 
 extern "C" struct llama_rs_chat_parser *llama_rs_chat_parser_init(
@@ -582,6 +583,11 @@ extern "C" struct llama_rs_chat_parser *llama_rs_chat_parser_init(
   parser->params.echo = false;
   parser->params.debug = false;
   parser->params.parse_tool_calls = true;
+
+  if (parser->params.is_continuation && !parser->params.echo) {
+      parser->msg_state = common_chat_parse("", true, parser->params);
+  }
+
   return parser;
 }
 
@@ -603,7 +609,8 @@ llama_rs_chat_parser_feed(struct llama_rs_chat_parser *parser,
     return LLAMA_RS_STATUS_INVALID_ARGUMENT;
   }
   try {
-    common_chat_msg new_state = common_chat_parse(chunk, true, parser->params);
+    parser->generated_text += chunk;
+    common_chat_msg new_state = common_chat_parse(parser->generated_text, true, parser->params);
     auto *diffs = new std::vector<struct common_chat_msg_diff>(
         common_chat_msg_diff::compute_diffs(parser->msg_state, new_state));
     parser->msg_state = std::move(new_state);
