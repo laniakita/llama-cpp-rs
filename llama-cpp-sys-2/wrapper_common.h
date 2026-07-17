@@ -11,7 +11,7 @@ struct llama_sampler;
 struct llama_rs_mtp_speculative;
 struct llama_vocab;
 
-#include "wrapper_auto-parser.h"
+#include "wrapper_chat-parser.h"
 #include "wrapper_utils.h"
 
 #ifdef __cplusplus
@@ -81,21 +81,8 @@ llama_rs_mtp_speculative_accept(struct llama_rs_mtp_speculative *spec,
 
 void llama_rs_string_free(char *ptr);
 
-struct llama_rs_autoparser *llama_rs_autoparser_init(void);
-
-void llama_rs_autoparser_free(struct llama_rs_autoparser *autoparser);
-
-llama_rs_status llama_rs_autoparser_analyze_template(
-    struct llama_rs_autoparser *parser, const struct llama_model *model,
-    const char *chat_template,
-    struct llama_rs_template_analysis *out_analysis);
-
-void llama_rs_template_analysis_free(
-    struct llama_rs_template_analysis *analysis);
-
 llama_rs_status llama_rs_chat_apply_template_with_params(
-    const struct llama_model *model,
-    const char *chat_template,
+    const struct llama_model *model, const char *chat_template,
     const struct llama_rs_chat_template_generation_params *params,
     struct llama_rs_common_chat_params *out_chat_params);
 
@@ -103,6 +90,40 @@ struct llama_rs_common_chat_params *llama_rs_common_chat_params_init(void);
 
 void llama_rs_common_chat_params_free(
     struct llama_rs_common_chat_params *params);
+
+struct llama_rs_common_chat_params_view *llama_rs_common_chat_params_view_init(
+    const struct llama_rs_common_chat_params *params);
+
+void llama_rs_common_chat_params_view_free(
+    struct llama_rs_common_chat_params_view *view);
+
+struct llama_rs_chat_parser *llama_rs_chat_parser_init(
+    const struct llama_rs_common_chat_params *params,
+    const struct llama_rs_chat_template_generation_params *opt);
+
+void llama_rs_chat_parser_free(struct llama_rs_chat_parser *parser);
+
+struct llama_rs_common_chat_msg_diffs *
+llama_rs_common_chat_msg_diffs_init(void);
+
+llama_rs_status
+llama_rs_chat_parser_feed(struct llama_rs_chat_parser *parser,
+                          const char *chunk,
+                          struct llama_rs_common_chat_msg_diffs **out_diffs);
+
+void llama_rs_common_chat_msg_diffs_free(
+    struct llama_rs_common_chat_msg_diffs *diffs);
+
+size_t
+llama_rs_chat_msg_diffs_len(const struct llama_rs_common_chat_msg_diffs *diffs);
+
+struct llama_rs_chat_msg_diff_view *llama_rs_chat_msg_diff_view_init(void);
+
+llama_rs_status llama_rs_chat_msg_diff_get_view(
+    const struct llama_rs_common_chat_msg_diffs *diffs, size_t index,
+    struct llama_rs_chat_msg_diff_view *out_view);
+
+void llama_rs_chat_msg_diff_view_free(struct llama_rs_chat_msg_diff_view *view);
 
 #ifdef __cplusplus
 }

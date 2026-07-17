@@ -1,0 +1,441 @@
+//! Based on the mtmd cli example from llama.cpp.
+
+use std::borrow::Cow;
+use std::ffi::CString;
+use std::io::{self, Write};
+use std::num::{NonZero, NonZeroU32};
+use std::path::Path;
+
+use clap::Parser;
+use encoding_rs::UTF_8;
+
+use llama_cpp_2::chat_parser::{
+    ChatParser, ChatParserInitError, LlamaGenerationParams, LlamaGenerationParamsBuilder,
+};
+use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::context::LlamaContext;
+use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::mtmd::{
+    MtmdBitmap, MtmdBitmapError, MtmdContext, MtmdContextParams, MtmdInputText,
+};
+
+use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::model::{
+    AddBos, LlamaChatMessageFull, LlamaChatTemplate, LlamaChatTool, LlamaChatToolCall, LlamaModel,
+    Special,
+};
+use llama_cpp_2::sampling::LlamaSampler;
+
+/// Command line parameters for the ChatParser CLI application
+#[derive(clap::Parser, Debug)]
+#[command(name = "chat-parser-cli")]
+#[command(about = "Experimental CLI for multimodal llama.cpp")]
+pub struct ChatParserCliParams {
+    /// Path to the model file
+    #[arg(short = 'm', long = "model", value_name = "PATH")]
+    pub model_path: String,
+    /// Path to the multimodal projection file
+    #[arg(long = "mmproj", value_name = "PATH")]
+    pub mmproj_path: String,
+    /// Path to image file(s)
+    #[arg(long = "image", value_name = "PATH")]
+    pub images: Vec<String>,
+    /// Path to audio file(s)
+    #[arg(long = "audio", value_name = "PATH")]
+    pub audio: Vec<String>,
+    /// Text prompt to use as input to the model. May include media markers - else they will be added automatically.
+    #[arg(short = 'p', long = "prompt", value_name = "TEXT")]
+    pub prompt: String,
+    /// Number of tokens to predict (-1 for unlimited)
+    #[arg(
+        short = 'n',
+        long = "n-predict",
+        value_name = "N",
+        default_value = "-1"
+    )]
+    pub n_predict: i32,
+    /// Number of threads
+    #[arg(short = 't', long = "threads", value_name = "N", default_value = "4")]
+    pub n_threads: i32,
+    /// Number of tokens to process in a batch during eval chunks
+    #[arg(long = "batch-size", value_name = "b", default_value = "1")]
+    pub batch_size: i32,
+    /// Maximum number of tokens in context
+    #[arg(long = "n-tokens", value_name = "N", default_value = "4096")]
+    pub n_tokens: NonZeroU32,
+    /// Chat template to use, default template if not provided
+    #[arg(long = "chat-template", value_name = "TEMPLATE")]
+    pub chat_template: Option<String>,
+
+    /// Enable thinking
+    #[arg(
+        long = "enable-thinking",
+        value_name = "ENABLE_THINKING",
+        default_value = "true"
+    )]
+    pub enable_thinking: bool,
+
+    /// Disable GPU acceleration
+    #[arg(long = "no-gpu")]
+    pub no_gpu: bool,
+    /// Disable GPU offload for multimodal projection
+    #[arg(long = "no-mmproj-offload")]
+    pub no_mmproj_offload: bool,
+    /// Media marker. If not provided, the default marker will be used.
+    #[arg(long = "marker", value_name = "TEXT")]
+    pub media_marker: Option<String>,
+    /// Minimum number of tokens used to represent an image (-1 for model default).
+    #[arg(long = "image-min-tokens", value_name = "N", default_value = "-1")]
+    pub image_min_tokens: i32,
+    /// Maximum number of tokens used to represent an image (-1 for model default).
+    #[arg(long = "image-max-tokens", value_name = "N", default_value = "-1")]
+    pub image_max_tokens: i32,
+}
+
+/// State of the CLI application.
+#[allow(missing_debug_implementations)]
+pub struct ChatParserCliContext<'a> {
+    /// The MTMD context for multimodal processing.
+    //pub mtmd_ctx: MtmdContext,
+    /// The batch used for processing tokens.
+    pub batch: LlamaBatch<'a>,
+    /// The list of loaded bitmaps (images/audio).
+    pub bitmaps: Vec<MtmdBitmap>,
+    /// The number of past tokens processed.
+    pub n_past: i32,
+    /// The chat template used for formatting messages.
+    pub chat_template: LlamaChatTemplate,
+    /// The current chat generation params.
+    pub generation_params: Option<LlamaGenerationParams>,
+    /// The chat parser.
+    pub parser: Option<ChatParser>,
+}
+
+impl<'a> ChatParserCliContext<'a> {
+    /// Creates a new ChatParser CLI context
+    ///
+    /// # Errors
+    pub fn new(
+        params: &ChatParserCliParams,
+        model: &'a LlamaModel,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        /*
+        // Initialize MTMD context
+        let mtmd_params = MtmdContextParams {
+            use_gpu: !params.no_gpu && !params.no_mmproj_offload,
+            print_timings: true,
+            n_threads: params.n_threads,
+            media_marker: CString::new(
+                params
+                    .media_marker
+                    .as_ref()
+                    .unwrap_or(&llama_cpp_2::mtmd::mtmd_default_marker().to_string())
+                    .clone(),
+            )?,
+            image_min_tokens: params.image_min_tokens,
+            image_max_tokens: params.image_max_tokens,
+        };
+
+        let mtmd_ctx = MtmdContext::init_from_file(&params.mmproj_path, model, &mtmd_params)?;
+        */
+
+        let chat_template = model
+            .chat_template(params.chat_template.as_deref())
+            .map_err(|e| format!("Failed to get chat template: {e}"))?;
+
+        let batch = LlamaBatch::new(params.n_tokens.get() as usize, 1);
+
+        Ok(Self {
+            //mtmd_ctx,
+            batch,
+            bitmaps: Vec::new(),
+            n_past: 0,
+            chat_template,
+            generation_params: None,
+            parser: None,
+        })
+    }
+
+    /// Loads media (image or audio) from the specified file path
+    /// # Errors
+    pub fn load_media(&mut self, path: &str) -> Result<(), MtmdBitmapError> {
+        /*
+        let bitmap = MtmdBitmap::from_file(&self.mtmd_ctx, path, false)?;
+        self.bitmaps.push(bitmap);
+        Ok(())
+        */
+        unimplemented!("disabled for now")
+    }
+
+    /// Evaluates a chat message, tokenizing and processing it through the model
+    /// # Errors
+    pub fn eval_message(
+        &mut self,
+        model: &LlamaModel,
+        context: &mut LlamaContext,
+        msg: LlamaChatMessageFull,
+        add_bos: bool,
+        batch_size: i32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let gen_params = LlamaGenerationParams::builder()
+            .with_add_generation_prompt(true)
+            .with_enable_thinking(true)
+            .with_messages(&[msg])
+            .build();
+
+        println!("Generation params: {:#?}", gen_params);
+
+        // Format the message using chat template (simplified)
+        let chat_params = model
+            .apply_chat_template_full(Some(&self.chat_template), &gen_params)
+            .map_err(|e| format!("Failed to apply chat template: {e}"))?;
+
+        println!("Chat params: {:#?}", chat_params.prompt());
+
+        let parser = ChatParser::new(&chat_params, &gen_params)?;
+        self.parser.replace(parser);
+        self.generation_params.replace(gen_params);
+
+        let input_text = MtmdInputText {
+            text: chat_params.prompt().to_string(),
+            add_special: add_bos,
+            parse_special: true,
+        };
+
+        let bitmap_refs: Vec<&MtmdBitmap> = self.bitmaps.iter().collect();
+
+        if bitmap_refs.is_empty() {
+            println!("No bitmaps provided, only tokenizing text");
+        } else {
+            println!("Tokenizing with {} bitmaps", bitmap_refs.len());
+        }
+
+        // Tokenize the input
+        //let chunks = self.mtmd_ctx.tokenize(input_text, &bitmap_refs)?;
+        // tokenize the prompt
+        let n_len = 2048;
+        let tokens_list = model
+            .str_to_token(&chat_params.prompt(), AddBos::Always)
+            .map_err(|e| format!("failed to tokenize {:#?}: {e}", chat_params.prompt()))?;
+
+        let n_cxt = context.n_ctx() as i32;
+        let n_kv_req = tokens_list.len() as i32 + (n_len - tokens_list.len() as i32);
+
+        eprintln!("n_len = {n_len}, n_ctx = {n_cxt}, k_kv_req = {n_kv_req}");
+
+        // make sure the KV cache is big enough to hold all the prompt and generated tokens
+        if n_kv_req > n_cxt {
+            panic!(
+                "n_kv_req > n_ctx, the required kv cache size is not big enough
+either reduce n_len or increase n_ctx"
+            )
+        }
+
+        if tokens_list.len() >= usize::try_from(n_len)? {
+            panic!("the prompt is too long, it has more tokens than n_len")
+        }
+
+        // print the prompt token-by-token
+        eprintln!();
+
+        println!(
+            "Tokenization complete, {} chunks created",
+            tokens_list.len()
+        );
+
+        // Clear bitmaps after tokenization
+        self.bitmaps.clear();
+
+        // create a llama_batch with size 512
+        // we use this object to submit token data for decoding
+        let mut batch = LlamaBatch::new(512, 1);
+
+        let last_index: i32 = (tokens_list.len() - 1) as i32;
+        for (i, token) in (0_i32..).zip(tokens_list.into_iter()) {
+            // llama_decode will output logits only for the last token of the prompt
+            let is_last = i == last_index;
+            batch.add(token, i, &[0], is_last)?;
+        }
+
+        context
+            .decode(&mut batch)
+            .map_err(|e| format!("llama_decode() failed: {e}"))?;
+
+        // main loop
+
+        self.n_past = batch.n_tokens();
+
+        //self.n_past = tokens_list.eval_chunks(&self.mtmd_ctx, context, 0, 0, batch_size, true)?;
+        Ok(())
+    }
+
+    /// Generates a response by sampling tokens from the model
+    /// # Errors
+    pub fn generate_response(
+        &mut self,
+        model: &LlamaModel,
+        context: &mut LlamaContext,
+        sampler: &mut LlamaSampler,
+        n_predict: i32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut generated_tokens = Vec::new();
+        let max_predict = if n_predict < 0 { i32::MAX } else { n_predict };
+        let mut decoder = UTF_8.new_decoder();
+
+        #[derive(Debug)]
+        struct StreamChunk<'a> {
+            content: Cow<'a, str>,
+            reasoning: Cow<'a, str>,
+            tool_call: Option<LlamaChatToolCall>,
+        }
+
+        /*
+        let mut parser = self
+            .parser
+            .take()
+            .ok_or_else(|| ChatParserInitError::NullStateReturn)
+            .map_err(|err| format!("Failed to create parser: {err:#?}"))?;
+        */
+
+        for _i in 0..max_predict {
+            // Sample next token
+            let token = sampler.sample(context, -1);
+            generated_tokens.push(token);
+            sampler.accept(token);
+
+            // Check for end of generation
+            if model.is_eog_token(token) {
+                println!();
+                break;
+            }
+
+            // Print token
+            let piece = model.token_to_piece(token, &mut decoder, true, None)?;
+
+            print!("{piece:?}");
+            /*
+            if let Ok(diff) = parser.feed_piece(&piece) {
+                let mut chunk = StreamChunk {
+                    content: "".into(),
+                    reasoning: "".into(),
+                    tool_call: None,
+                };
+                if let Some(reasoning) = diff.reasoning() {
+                    chunk.reasoning = reasoning;
+                }
+                if let Some(content) = diff.content() {
+                    chunk.content = content;
+                }
+                if let Some(tools) = diff.tool_call() {
+                    chunk.tool_call.replace(tools);
+                }
+                print!("{chunk:#?}");
+            }*/
+
+            io::stdout().flush()?;
+
+            // Prepare next batch
+            self.batch.clear();
+            self.batch.add(token, self.n_past, &[0], true)?;
+            self.n_past += 1;
+
+            // Decode
+            context.decode(&mut self.batch)?;
+        }
+
+        Ok(())
+    }
+}
+
+fn run_single_turn(
+    ctx: &mut ChatParserCliContext,
+    model: &LlamaModel,
+    context: &mut LlamaContext,
+    sampler: &mut LlamaSampler,
+    params: &ChatParserCliParams,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Add media marker if not present
+    let mut prompt = params.prompt.clone();
+    let default_marker = llama_cpp_2::mtmd::mtmd_default_marker().to_string();
+    let media_marker = params.media_marker.as_ref().unwrap_or(&default_marker);
+    if !prompt.contains(media_marker) {
+        prompt.push_str(media_marker);
+    }
+
+    // Load media files
+    for image_path in &params.images {
+        println!("Loading image: {image_path}");
+        ctx.load_media(image_path)?;
+    }
+    for audio_path in &params.audio {
+        ctx.load_media(audio_path)?;
+    }
+
+    // Create user message
+    let msg = LlamaChatMessageFull::new("user", &prompt, None, None, None, None)?;
+
+    println!("Evaluating message: {msg:?}");
+
+    // Evaluate the message (prefill)
+    ctx.eval_message(model, context, msg, true, params.batch_size)?;
+
+    // Generate response (decode)
+    ctx.generate_response(model, context, sampler, params.n_predict)?;
+
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let params = ChatParserCliParams::parse();
+
+    // Validate required parameters
+    if !Path::new(&params.model_path).exists() {
+        eprintln!("Error: Model file not found: {}", params.model_path);
+        return Err("Model file not found".into());
+    }
+
+    if !Path::new(&params.mmproj_path).exists() {
+        eprintln!(
+            "Error: Multimodal projection file not found: {}",
+            params.mmproj_path
+        );
+        return Err("Multimodal projection file not found".into());
+    }
+
+    println!("Loading model: {}", params.model_path);
+
+    // Initialize backend
+    let backend = LlamaBackend::init()?;
+
+    // Setup model parameters
+    let mut model_params = LlamaModelParams::default();
+    if !params.no_gpu {
+        model_params = model_params.with_n_gpu_layers(1_000_000); // Use all layers on GPU
+    }
+
+    // Load model
+    let model = LlamaModel::load_from_file(&backend, &params.model_path, &model_params)?;
+
+    // Create context
+    let context_params = LlamaContextParams::default()
+        .with_n_threads(params.n_threads)
+        .with_n_batch(params.batch_size.try_into()?)
+        .with_n_ctx(Some(params.n_tokens));
+    let mut context = model.new_context(&backend, context_params)?;
+
+    // Create sampler
+    let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
+
+    println!("Model loaded successfully");
+    println!("Loading mtmd projection: {}", params.mmproj_path);
+
+    // Create the MTMD context
+    let mut ctx = ChatParserCliContext::new(&params, &model)?;
+
+    run_single_turn(&mut ctx, &model, &mut context, &mut sampler, &params)?;
+
+    println!("\n");
+
+    Ok(())
+}
