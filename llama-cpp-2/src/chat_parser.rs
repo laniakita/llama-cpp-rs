@@ -64,8 +64,8 @@ impl ChatParser {
     /// on the model.
     ///
     /// # Errors
-    /// - Returns a [ChatParserInitError::] if the underlying C++ allocations fail.
-    /// - Returns a [ChatParserInitError::FromBytesWithNulError] if `generation_params.as_ptr()` fails.
+    /// - Returns a [ChatParserInitError::NullStateReturn] if the underlying C++ allocations fail.
+    /// - Returns a [ChatParserInitError::NullParamsReturn] if `generation_params.as_ptr()` fails.
     pub fn new(
         chat_params: &LlamaChatParams,
         generation_params: &LlamaGenerationParams,
@@ -88,7 +88,10 @@ impl ChatParser {
     /// rest of the character in the next token.
     ///
     /// # Errors
-    /// Returns `ChatParserFeedError` if the C++ engine fails.
+    /// Returns [ChatParserFeedError::InvalidArgument] if the input `piece` is null.
+    /// Returns [ChatParserFeedError::Exception] if llama.cpp throws an exception.
+    /// Returns [ChatParserFeedError::NulError] if `piece` contains null bytes.
+    /// Returns [ChatParserFeedError::ChatDiffCreationError] if `diffs_ptr` is null/missing.
     pub fn feed_piece(&mut self, piece: &str) -> Result<Vec<ChatDiff>, ChatParserFeedError> {
         let mut diffs_ptr = ptr::null_mut();
         let diffs_res: llama_cpp_sys_2::llama_rs_status = unsafe {
@@ -141,7 +144,8 @@ pub enum ChatDiffCreationError {
     /// This occurs if the diffs or out_view is null/missing.
     #[error("Invalid argument passed to the Llama.cpp parser")]
     InvalidArgument,
-    /// Llama.cpp returns this when it fails to create the diff view.
+
+    /// Occurs if a valid input diff returns a view that is completely empty/null.
     #[error("Exception in Llama.cpp occured")]
     Exception,
 }
@@ -156,23 +160,43 @@ pub struct ChatDiff {
 
 impl ChatDiff {
     /// Creates a new [ChatDiff].
+    ///
+    /// # Errors
+    /// - Returns [ChatDiffCreationError::InvalidArgument] if `diff` is null.
+    /// - Returns [ChatDiffCreationError::Exception] if llama.cpp returns a null view for the given `diff`.
     pub fn new(
         diff: *mut common_chat_msg_diffs,
         index: usize,
     ) -> Result<Self, ChatDiffCreationError> {
+        if diff.is_null() {
+            return Err(ChatDiffCreationError::InvalidArgument);
+        }
+
         let view = unsafe { common_chat_msg_diffs_get_view(diff, index) };
+
+        let content = Self::get_opt_string(view.content);
+        let reasoning = Self::get_opt_string(view.reasoning_content);
+        let tool_call_name = Self::get_opt_string(view.tool_call_name);
+        let tool_call_id = Self::get_opt_string(view.tool_call_id);
+        let tool_call_arguments = Self::get_opt_string(view.tool_call_arguments);
+
+        if content.is_none()
+            && reasoning.is_none()
+            && tool_call_name.is_none()
+            && tool_call_id.is_none()
+            && tool_call_arguments.is_none()
+        {
+            return Err(ChatDiffCreationError::Exception);
+        }
+
         Ok(Self {
-            content: Self::get_opt_string(view.content),
-            reasoning: Self::get_opt_string(view.reasoning_content),
-            tool_call: if let Some(name) = Self::get_opt_string(view.tool_call_name) {
+            content,
+            reasoning,
+            tool_call: if let Some(id) = tool_call_id {
                 match LlamaChatToolCall::new(
-                    name.into(),
-                    Self::get_opt_string(view.tool_call_arguments)
-                        .unwrap_or_default()
-                        .into(),
-                    Self::get_opt_string(view.tool_call_id)
-                        .unwrap_or_default()
-                        .into(),
+                    tool_call_name.unwrap_or_default().into(),
+                    tool_call_arguments.unwrap_or_default().into(),
+                    id.into(),
                 ) {
                     Ok(tc) => Some(tc),
                     Err(_) => None,
@@ -228,6 +252,10 @@ pub enum ChatParamsCreationError {
     /// Failed to create chat params view.
     #[error("Failed to create chat params view")]
     ViewCreationFailed,
+
+    /// Invalid argument passed to the Llama.cpp parser
+    #[error("Invalid argument passed to the Llama.cpp parser")]
+    InvalidArgument,
 }
 
 /// Safe wrapper around `common_chat_params`.
@@ -241,7 +269,13 @@ pub struct LlamaChatParams {
 
 impl LlamaChatParams {
     /// Creates a new `LlamaChatParams` from a raw pointer + a view to it.
+    ///
+    /// # Errors
+    /// - Returns [ChatParamsCreationError::InvalidArgument] if `ptr` is null.
     pub fn new(ptr: *mut common_chat_params) -> Result<Self, ChatParamsCreationError> {
+        if ptr.is_null() {
+            return Err(ChatParamsCreationError::InvalidArgument);
+        }
         let view = unsafe { common_chat_params_get_view(ptr) };
         Ok(Self { ptr, view })
     }
