@@ -11,7 +11,6 @@ struct llama_sampler;
 struct llama_rs_mtp_speculative;
 struct llama_vocab;
 
-#include "wrapper_chat-parser.h"
 #include "wrapper_utils.h"
 
 #ifdef __cplusplus
@@ -81,49 +80,108 @@ llama_rs_mtp_speculative_accept(struct llama_rs_mtp_speculative *spec,
 
 void llama_rs_string_free(char *ptr);
 
-llama_rs_status llama_rs_chat_apply_template_with_params(
-    const struct llama_model *model, const char *chat_template,
-    const struct llama_rs_chat_template_generation_params *params,
-    struct llama_rs_common_chat_params *out_chat_params);
+struct common_chat_templates_inputs;
+struct common_chat_params;
+struct common_chat_parser_params;
+struct common_chat_msg;
+struct common_chat_msg_diffs; // Opaque wrapper for
+                              // std::vector<common_chat_msg_diff>
 
-struct llama_rs_common_chat_params *llama_rs_common_chat_params_init(void);
+enum llama_rs_common_chat_format {
+  LLAMA_RS_COMMON_CHAT_FORMAT_CONTENT_ONLY,
+  LLAMA_RS_COMMON_CHAT_FORMAT_PEG_NATIVE,
+  LLAMA_RS_COMMON_CHAT_FORMAT_PEG_SIMPLE,
+  LLAMA_RS_COMMON_CHAT_FORMAT_PEG_GEMMA4,
+  LLAMA_RS_COMMON_CHAT_FORMAT_COUNT,
+};
 
-void llama_rs_common_chat_params_free(
-    struct llama_rs_common_chat_params *params);
+enum llama_rs_common_chat_continuation {
+  LLAMA_RS_COMMON_CHAT_CONTINUATION_NONE,
+  LLAMA_RS_COMMON_CHAT_CONTINUATION_AUTO,
+  LLAMA_RS_COMMON_CHAT_CONTINUATION_REASONING,
+  LLAMA_RS_COMMON_CHAT_CONTINUATION_CONTENT,
+};
 
-struct llama_rs_common_chat_params_view *llama_rs_common_chat_params_view_init(
-    const struct llama_rs_common_chat_params *params);
+enum llama_rs_common_reasoning_format {
+  LLAMA_RS_COMMON_REASONING_FORMAT_NONE,
+  LLAMA_RS_COMMON_REASONING_FORMAT_AUTO,
+  LLAMA_RS_COMMON_REASONING_FORMAT_DEEPSEEK_LEGACY,
+  LLAMA_RS_COMMON_REASONING_FORMAT_DEEPSEEK,
+};
 
-void llama_rs_common_chat_params_view_free(
-    struct llama_rs_common_chat_params_view *view);
+struct common_chat_templates_inputs *common_chat_templates_inputs_create(
+    bool add_generation_prompt, bool enable_thinking, int32_t reasoning_format,
+    int32_t continue_final_message, bool parallel_tool_calls, bool add_bos,
+    bool add_eos, const char *json_schema, const char *grammar,
+    const char *extra_context);
+void common_chat_templates_inputs_free(
+    struct common_chat_templates_inputs *inputs);
 
-struct llama_rs_chat_parser *llama_rs_chat_parser_init(
-    const struct llama_rs_common_chat_params *params,
-    const struct llama_rs_chat_template_generation_params *opt);
+llama_rs_status common_chat_templates_inputs_add_message(
+    struct common_chat_templates_inputs *inputs, const char *role,
+    const char *content, const char *reasoning_content, const char *tool_name,
+    const char *tool_call_id);
+llama_rs_status common_chat_templates_inputs_add_tool_call_to_last_message(
+    struct common_chat_templates_inputs *inputs, const char *name,
+    const char *arguments, const char *id);
+llama_rs_status common_chat_templates_inputs_add_tool(
+    struct common_chat_templates_inputs *inputs, const char *name,
+    const char *description, const char *parameters);
+
+struct common_chat_params *
+common_chat_apply_template(const struct llama_model *model,
+                           const char *chat_template,
+                           const struct common_chat_templates_inputs *inputs);
+void common_chat_params_free(struct common_chat_params *params);
+
+struct common_chat_params_view {
+  int32_t format;
+  const char *prompt;
+  const char *grammar;
+  bool grammar_lazy;
+  const char *generation_prompt;
+  bool supports_thinking;
+  const char *thinking_start_tag;
+  const char *thinking_end_tag;
+  const char *parser;
+};
+struct common_chat_params_view
+common_chat_params_get_view(const struct common_chat_params *params);
+
+size_t common_chat_params_get_preserved_tokens_count(
+    const struct common_chat_params *params);
+const char *
+common_chat_params_get_preserved_token(const struct common_chat_params *params,
+                                       size_t index);
+
+struct llama_rs_chat_parser;
+
+struct llama_rs_chat_parser *
+llama_rs_chat_parser_init(const struct common_chat_params *params,
+                          const struct common_chat_templates_inputs *inputs);
 
 void llama_rs_chat_parser_free(struct llama_rs_chat_parser *parser);
-
-struct llama_rs_common_chat_msg_diffs *
-llama_rs_common_chat_msg_diffs_init(void);
 
 llama_rs_status
 llama_rs_chat_parser_feed(struct llama_rs_chat_parser *parser,
                           const char *chunk,
-                          struct llama_rs_common_chat_msg_diffs **out_diffs);
+                          struct common_chat_msg_diffs **out_diffs);
 
-void llama_rs_common_chat_msg_diffs_free(
-    struct llama_rs_common_chat_msg_diffs *diffs);
-
+void common_chat_msg_diffs_free(struct common_chat_msg_diffs *diffs);
 size_t
-llama_rs_chat_msg_diffs_len(const struct llama_rs_common_chat_msg_diffs *diffs);
+common_chat_msg_diffs_get_size(const struct common_chat_msg_diffs *diffs);
 
-struct llama_rs_chat_msg_diff_view *llama_rs_chat_msg_diff_view_init(void);
-
-llama_rs_status llama_rs_chat_msg_diff_get_view(
-    const struct llama_rs_common_chat_msg_diffs *diffs, size_t index,
-    struct llama_rs_chat_msg_diff_view *out_view);
-
-void llama_rs_chat_msg_diff_view_free(struct llama_rs_chat_msg_diff_view *view);
+struct common_chat_msg_diff_view {
+  const char *reasoning_content;
+  const char *content;
+  size_t tool_call_index;
+  const char *tool_call_name;
+  const char *tool_call_arguments;
+  const char *tool_call_id;
+};
+struct common_chat_msg_diff_view
+common_chat_msg_diffs_get_view(const struct common_chat_msg_diffs *diffs,
+                               size_t index);
 
 #ifdef __cplusplus
 }
