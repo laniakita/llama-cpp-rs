@@ -1,4 +1,5 @@
 //! A safe wrapper around `llama_model`.
+use std::borrow::Cow;
 use std::ffi::{c_char, CStr, CString};
 use std::num::NonZeroU16;
 use std::os::raw::c_int;
@@ -77,8 +78,12 @@ impl std::fmt::Debug for LlamaChatTemplate {
 /// A Safe wrapper around `llama_chat_message`
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct LlamaChatMessage {
-    role: CString,
-    content: CString,
+    pub(crate) role: CString,
+    pub(crate) content: CString,
+    pub(crate) reasoning_content: CString,
+    pub(crate) tool_name: CString,
+    pub(crate) tool_call_id: CString,
+    pub(crate) tool_calls: Vec<LlamaChatToolCall>,
 }
 
 impl LlamaChatMessage {
@@ -90,43 +95,79 @@ impl LlamaChatMessage {
         Ok(Self {
             role: CString::new(role)?,
             content: CString::new(content)?,
+            reasoning_content: CString::default(),
+            tool_name: CString::default(),
+            tool_call_id: CString::default(),
+            tool_calls: Vec::default(),
         })
     }
-}
 
-/// A Safe wrapper around `llama_chat_message`
-#[derive(Debug, Eq, PartialEq, Clone)]
-pub struct LlamaChatMessageFull {
-    pub(crate) role: CString,
-    pub(crate) content: CString,
-    pub(crate) reasoning_content: CString,
-    pub(crate) tool_name: CString,
-    pub(crate) tool_call_id: CString,
-    pub(crate) tool_calls: Vec<LlamaChatToolCall>,
-}
-
-impl LlamaChatMessageFull {
-    /// Create a new `LlamaChatMessageFull`
+    /// Sets the reasoning content for the chat message.
     ///
     /// # Errors
-    /// - If either of ``role`` or ``content`` contain null bytes.
-    /// - If ``reasoning_content``, ``tool_name``, ``tool_call_id``, or ``tool_calls`` are provided, and they contain null bytes.
-    pub fn new(
-        role: &str,
-        content: &str,
-        reasoning_content: Option<&str>,
-        tool_name: Option<&str>,
-        tool_call_id: Option<&str>,
-        tool_calls: Option<&[LlamaChatToolCall]>,
-    ) -> Result<Self, NewLlamaChatMessageError> {
-        Ok(Self {
-            role: CString::new(role.to_string())?,
-            content: CString::new(content.to_string())?,
-            reasoning_content: CString::new(reasoning_content.unwrap_or_default().to_string())?,
-            tool_name: CString::new(tool_name.unwrap_or_default().to_string())?,
-            tool_call_id: CString::new(tool_call_id.unwrap_or_default().to_string())?,
-            tool_calls: tool_calls.map_or_else(Vec::new, |slice| slice.to_vec()),
-        })
+    /// If ``reasoning_content`` contains null bytes.
+    pub fn with_reasoning_content(
+        &mut self,
+        reasoning_content: String,
+    ) -> Result<(), NewLlamaChatMessageError> {
+        self.reasoning_content = CString::new(reasoning_content)?;
+        Ok(())
+    }
+
+    /// Sets the tool name for the chat message.
+    ///
+    /// # Errors
+    /// If ``tool_name`` contains null bytes.
+    pub fn with_tool_name(&mut self, tool_name: String) -> Result<(), NewLlamaChatMessageError> {
+        self.tool_name = CString::new(tool_name)?;
+        Ok(())
+    }
+
+    /// Sets the tool call ID for the chat message.
+    ///
+    /// # Errors
+    /// If ``tool_call_id`` contains null bytes.
+    pub fn with_tool_call_id(
+        &mut self,
+        tool_call_id: String,
+    ) -> Result<(), NewLlamaChatMessageError> {
+        self.tool_call_id = CString::new(tool_call_id)?;
+        Ok(())
+    }
+
+    /// Sets nested tool calls for the chat message.
+    pub fn with_tool_calls(&mut self, tool_calls: &[LlamaChatToolCall]) {
+        self.tool_calls = tool_calls.to_vec();
+    }
+
+    /// Gets the role of the chat message as a string slice.
+    pub fn role<'a>(&'a self) -> Cow<'a, str> {
+        self.role.to_string_lossy()
+    }
+
+    /// Gets the content of the chat message as a string slice.
+    pub fn content<'a>(&'a self) -> Cow<'a, str> {
+        self.content.to_string_lossy()
+    }
+
+    /// Gets the reasoning content of the chat message as a string slice.
+    pub fn reasoning_content<'a>(&'a self) -> Cow<'a, str> {
+        self.reasoning_content.to_string_lossy()
+    }
+
+    /// Gets the tool name of the chat message as a string slice.
+    pub fn tool_name<'a>(&'a self) -> Cow<'a, str> {
+        self.tool_name.to_string_lossy()
+    }
+
+    /// Gets the tool call ID of the chat message as a string slice.
+    pub fn tool_call_id<'a>(&'a self) -> Cow<'a, str> {
+        self.tool_call_id.to_string_lossy()
+    }
+
+    /// Gets the tool calls of the chat message as a slice of `LlamaChatToolCall`.
+    pub fn tool_calls(&self) -> &[LlamaChatToolCall] {
+        &self.tool_calls
     }
 }
 
@@ -177,7 +218,7 @@ impl LlamaChatToolCall {
     ///
     /// # Errors
     /// if `name`, `arguments`, or `id` contain null bytes.
-    pub fn new(name: &str, arguments: &str, id: &str) -> Result<Self, std::ffi::NulError> {
+    pub fn new(name: String, arguments: String, id: String) -> Result<Self, std::ffi::NulError> {
         Ok(Self {
             name: CString::new(name)?,
             arguments: CString::new(arguments)?,
