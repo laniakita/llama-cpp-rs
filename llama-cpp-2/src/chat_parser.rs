@@ -31,7 +31,7 @@ use llama_cpp_sys_2::{
 };
 
 use crate::{
-    model::{LlamaChatMessageFull, LlamaChatTool, LlamaChatToolCall},
+    model::{LlamaChatMessage, LlamaChatTool, LlamaChatToolCall},
     token::LlamaToken,
 };
 
@@ -222,9 +222,13 @@ impl<'a> ChatDiff<'a> {
         unsafe {
             if let Some(name) = Self::get_opt_string_cow((*self.view).tool_call_name) {
                 match LlamaChatToolCall::new(
-                    &name,
-                    &Self::get_opt_string_cow((*self.view).tool_call_arguments).unwrap_or_default(),
-                    &Self::get_opt_string_cow((*self.view).tool_call_id).unwrap_or_default(),
+                    name.into(),
+                    Self::get_opt_string_cow((*self.view).tool_call_arguments)
+                        .unwrap_or_default()
+                        .into(),
+                    Self::get_opt_string_cow((*self.view).tool_call_id)
+                        .unwrap_or_default()
+                        .into(),
                 ) {
                     Ok(tc) => Some(tc),
                     Err(_) => None,
@@ -550,7 +554,7 @@ pub struct LlamaChatParamsView {
 #[derive(Debug, Clone)]
 pub struct LlamaGenerationParams {
     /// Message history in order.
-    pub messages: Vec<LlamaChatMessageFull>,
+    pub messages: Vec<LlamaChatMessage>,
     /// Tools to be aware of.
     pub tools: Vec<LlamaChatTool>,
     /// Add generation prompt to the prompt.
@@ -612,7 +616,7 @@ impl LlamaGenerationParams {
     /// Use this to create a builder for `LlamaGenerationParams`.
     pub fn builder() -> LlamaGenerationParamsBuilder {
         LlamaGenerationParamsBuilder {
-            messages: Vec::<LlamaChatMessageFull>::default(),
+            messages: Vec::<LlamaChatMessage>::default(),
             tools: None,
             add_generation_prompt: false,
             enable_thinking: true,
@@ -642,7 +646,7 @@ impl LlamaGenerationParams {
             .iter()
             .map(|c| {
                 let tool_calls = c
-                    .tool_calls
+                    .tool_calls()
                     .iter()
                     .map(|tc| llama_rs_chat_tool_call {
                         name: get_ptr(&tc.name),
@@ -715,7 +719,7 @@ impl LlamaGenerationParams {
 impl Default for LlamaGenerationParams {
     fn default() -> Self {
         Self {
-            messages: Vec::<LlamaChatMessageFull>::default(),
+            messages: Vec::<LlamaChatMessage>::default(),
             tools: Vec::<LlamaChatTool>::default(),
             add_generation_prompt: false,
             enable_thinking: true,
@@ -735,7 +739,7 @@ impl Default for LlamaGenerationParams {
 #[derive(Debug, Clone)]
 pub struct LlamaGenerationParamsBuilder {
     /// Message history in order.
-    pub messages: Vec<LlamaChatMessageFull>,
+    pub messages: Vec<LlamaChatMessage>,
     /// Tools to be aware of.
     pub tools: Option<Vec<LlamaChatTool>>,
     /// Add generation prompt to the prompt.
@@ -776,7 +780,7 @@ pub struct LlamaGenerationParamsBuilder {
 
 impl LlamaGenerationParamsBuilder {
     /// Set the message history to use for this generation.
-    pub fn with_messages(mut self, messages: &[LlamaChatMessageFull]) -> Self {
+    pub fn with_messages(mut self, messages: &[LlamaChatMessage]) -> Self {
         self.messages = messages.to_vec();
         self
     }
