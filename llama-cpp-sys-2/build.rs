@@ -451,7 +451,10 @@ fn main() {
     if cfg!(feature = "common") {
         bindings_builder = bindings_builder
             .clang_arg("-DLLAMA_RS_BUILD_COMMON")
-            .allowlist_item("llama_rs_.*");
+            .allowlist_function("llama_rs_.*")
+            .allowlist_type("llama_rs_.*")
+            .allowlist_function("common_chat_.*")
+            .allowlist_type("common_chat_.*");
     }
 
     // Configure mtmd feature if enabled
