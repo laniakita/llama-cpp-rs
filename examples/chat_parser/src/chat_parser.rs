@@ -19,7 +19,7 @@ use llama_cpp_2::mtmd::{
 };
 
 use llama_cpp_2::llama_backend::LlamaBackend;
-use llama_cpp_2::model::{LlamaChatMessageFull, LlamaChatTemplate, LlamaChatToolCall, LlamaModel};
+use llama_cpp_2::model::{LlamaChatMessage, LlamaChatTemplate, LlamaChatToolCall, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
 use llama_cpp_2::token::LlamaToken;
@@ -176,7 +176,7 @@ impl<'a> ChatParserCliContext<'a> {
         &mut self,
         model: &LlamaModel,
         context: &mut LlamaContext,
-        msg: LlamaChatMessageFull,
+        msg: LlamaChatMessage,
         add_bos: bool,
         batch_size: i32,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -574,7 +574,7 @@ fn run_single_turn(
     }
 
     // Create user message
-    let msg = LlamaChatMessageFull::new("user", &prompt, None, None, None, None)?;
+    let msg = LlamaChatMessage::new("user".into(), prompt)?;
 
     println!("Evaluating message: {msg:?}");
 
