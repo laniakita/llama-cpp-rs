@@ -175,11 +175,11 @@ impl LlamaChatMessage {
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct LlamaChatTool {
     /// Name of the tool.
-    pub name: CString,
+    pub(crate) name: CString,
     /// Description of the tool.
-    pub description: CString,
+    pub(crate) description: CString,
     /// Stringified JSON schema for the tool's parameters.
-    pub parameters: CString,
+    pub(crate) parameters: CString,
 }
 
 impl LlamaChatTool {
@@ -198,6 +198,21 @@ impl LlamaChatTool {
             parameters: CString::new(parameters)?,
         })
     }
+
+    /// Gets the name of the tool as a string slice.
+    pub fn name<'a>(&'a self) -> Cow<'a, str> {
+        self.name.to_string_lossy()
+    }
+
+    /// Gets the description of the tool as a string slice.
+    pub fn description<'a>(&'a self) -> Cow<'a, str> {
+        self.description.to_string_lossy()
+    }
+
+    /// Gets the parameters of the tool as a string slice.
+    pub fn parameters<'a>(&'a self) -> Cow<'a, str> {
+        self.parameters.to_string_lossy()
+    }
 }
 
 /// A wrapper around `llama_chat_tool_call`
@@ -206,11 +221,11 @@ impl LlamaChatTool {
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct LlamaChatToolCall {
     /// Name of the tool being called.
-    pub name: CString,
+    pub(crate) name: CString,
     /// Stringified JSON arguments for the tool call.
-    pub arguments: CString,
+    pub(crate) arguments: CString,
     /// Identifier for this tool call.
-    pub id: CString,
+    pub(crate) id: CString,
 }
 
 impl LlamaChatToolCall {
@@ -224,6 +239,21 @@ impl LlamaChatToolCall {
             arguments: CString::new(arguments)?,
             id: CString::new(id)?,
         })
+    }
+
+    /// Gets the name of the tool call as a string slice.
+    pub fn name<'a>(&'a self) -> Cow<'a, str> {
+        self.name.to_string_lossy()
+    }
+
+    /// Gets the arguments of the tool call as a string slice.
+    pub fn arguments<'a>(&'a self) -> Cow<'a, str> {
+        self.arguments.to_string_lossy()
+    }
+
+    /// Gets the id of the tool call as a string slice.
+    pub fn id<'a>(&'a self) -> Cow<'a, str> {
+        self.id.to_string_lossy()
     }
 }
 
@@ -1070,46 +1100,32 @@ impl LlamaModel {
     /// # Errors
     /// There are many ways this can fail. See [`ApplyChatTemplateFullError`] for more information.
     #[tracing::instrument(skip_all)]
-    pub fn apply_chat_template_full(
+    pub fn apply_chat_template_with_params(
         &self,
         tmpl: Option<&LlamaChatTemplate>,
         params: &LlamaGenerationParams,
     ) -> Result<LlamaChatParams, ApplyChatTemplateErrorFull> {
-        let mut gen_params_state = params.into_ptr()?;
+        let mut gen_params_state = params.as_ptr()?;
 
-        let out_chat_params: *mut llama_cpp_sys_2::llama_rs_common_chat_params =
-            unsafe { llama_cpp_sys_2::llama_rs_common_chat_params_init() };
-
-        let res_status = unsafe {
-            llama_cpp_sys_2::llama_rs_chat_apply_template_with_params(
+        let out_chat_params = unsafe {
+            llama_cpp_sys_2::common_chat_apply_template(
                 self.model.as_ptr(),
                 tmpl.map_or(ptr::null(), |t| t.as_c_str().as_ptr()),
                 gen_params_state.get(),
-                out_chat_params,
             )
         };
 
-        match res_status {
-            llama_cpp_sys_2::LLAMA_RS_STATUS_OK => match LlamaChatParams::new(out_chat_params) {
+        if out_chat_params.is_null() {
+            Err(ApplyChatTemplateErrorFull::LlamaCppException)
+        } else {
+            match LlamaChatParams::new(out_chat_params) {
                 Ok(params) => Ok(params),
                 Err(e) => {
                     unsafe {
-                        llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
+                        llama_cpp_sys_2::common_chat_params_free(out_chat_params);
                     }
                     Err(e.into())
                 }
-            },
-            llama_cpp_sys_2::LLAMA_RS_STATUS_INVALID_ARGUMENT => {
-                unsafe {
-                    llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
-                }
-                Err(ApplyChatTemplateErrorFull::InvalidArgument)
-            }
-            llama_cpp_sys_2::LLAMA_RS_STATUS_EXCEPTION | _ => {
-                unsafe {
-                    llama_cpp_sys_2::llama_rs_common_chat_params_free(out_chat_params);
-                }
-                Err(ApplyChatTemplateErrorFull::LlamaCppException)
             }
         }
     }

@@ -180,18 +180,17 @@ impl<'a> ChatParserCliContext<'a> {
         add_bos: bool,
         batch_size: i32,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let gen_params = LlamaGenerationParams::builder()
+        let gen_params = LlamaGenerationParams::default()
             .with_add_generation_prompt(true)
             .with_enable_thinking(true)
             .with_messages(&[msg])
-            .with_add_bos(add_bos)
-            .build();
+            .with_add_bos(add_bos);
 
         println!("Generation params: {:#?}", gen_params);
 
         // Format the message using chat template (simplified)
         let chat_params = model
-            .apply_chat_template_full(Some(&self.chat_template), &gen_params)
+            .apply_chat_template_with_params(Some(&self.chat_template), &gen_params)
             .map_err(|e| format!("Failed to apply chat template: {e}"))?;
 
         println!("Chat params: {:#?}", chat_params.view());
@@ -523,7 +522,7 @@ struct StreamChunk<'a> {
 
 impl<'a> StreamChunk<'a> {
     /// Creates a vector of `StreamChunk` from a slice of `ChatDiff`
-    pub fn from_diffs(diffs: &[ChatDiff<'a>]) -> Vec<StreamChunk<'a>> {
+    pub fn from_diffs(diffs: &'a [ChatDiff]) -> Vec<StreamChunk<'a>> {
         diffs
             .iter()
             .map(|diff| {
