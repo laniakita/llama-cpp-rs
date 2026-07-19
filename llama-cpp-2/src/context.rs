@@ -134,6 +134,14 @@ impl<'model> LlamaContext<'model> {
         }
     }
 
+    /// Manually mark a specific logit index as initialized.
+    /// This is required when using external C++ APIs (like `mtmd`) that evaluate tokens
+    /// without passing through `LlamaContext::decode`.
+    pub fn clear_and_mark_logit(&mut self, i: i32) {
+        self.initialized_logits.clear();
+        self.initialized_logits.push(i);
+    }
+
     /// Get a mutable pointer to `llama_context` for the cases where the
     /// mutation only happens via `llama_synchronize`.
     ///
