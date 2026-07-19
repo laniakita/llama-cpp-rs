@@ -116,6 +116,14 @@ impl<'model> LlamaContext<'model> {
         }
     }
 
+    /// Manually mark a specific logit index as initialized.
+    /// This is required when using external C++ APIs (like `mtmd`) that evaluate tokens
+    /// without passing through `LlamaContext::decode`.
+    pub fn clear_and_mark_logit(&mut self, i: i32) {
+        self.initialized_logits.clear();
+        self.initialized_logits.push(i);
+    }
+
     /// Get the embeddings for the `i`th sequence in the current context.
     ///
     /// # Returns
@@ -283,12 +291,14 @@ impl<'model> LlamaContext<'model> {
             "logit {i} is not initialized. only {:?} is",
             self.initialized_logits
         );
-        assert!(
-            self.n_ctx() > u32::try_from(i).expect("i does not fit into a u32"),
-            "n_ctx ({}) must be greater than i ({})",
-            self.n_ctx(),
-            i
-        );
+        if i >= 0 {
+            assert!(
+                self.n_ctx() > i as u32,
+                "n_ctx ({}) must be greater than i ({})",
+                self.n_ctx(),
+                i
+            );
+        }
 
         let data = unsafe { llama_cpp_sys_2::llama_get_logits_ith(self.context.as_ptr(), i) };
         let len = usize::try_from(self.model.n_vocab()).expect("n_vocab does not fit into a usize");

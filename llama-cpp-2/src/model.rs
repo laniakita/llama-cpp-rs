@@ -107,20 +107,20 @@ impl LlamaChatMessage {
     /// # Errors
     /// If ``reasoning_content`` contains null bytes.
     pub fn with_reasoning_content(
-        &mut self,
+        mut self,
         reasoning_content: String,
-    ) -> Result<(), NewLlamaChatMessageError> {
+    ) -> Result<Self, NewLlamaChatMessageError> {
         self.reasoning_content = CString::new(reasoning_content)?;
-        Ok(())
+        Ok(self)
     }
 
     /// Sets the tool name for the chat message.
     ///
     /// # Errors
     /// If ``tool_name`` contains null bytes.
-    pub fn with_tool_name(&mut self, tool_name: String) -> Result<(), NewLlamaChatMessageError> {
+    pub fn with_tool_name(mut self, tool_name: String) -> Result<Self, NewLlamaChatMessageError> {
         self.tool_name = CString::new(tool_name)?;
-        Ok(())
+        Ok(self)
     }
 
     /// Sets the tool call ID for the chat message.
@@ -128,16 +128,17 @@ impl LlamaChatMessage {
     /// # Errors
     /// If ``tool_call_id`` contains null bytes.
     pub fn with_tool_call_id(
-        &mut self,
+        mut self,
         tool_call_id: String,
-    ) -> Result<(), NewLlamaChatMessageError> {
+    ) -> Result<Self, NewLlamaChatMessageError> {
         self.tool_call_id = CString::new(tool_call_id)?;
-        Ok(())
+        Ok(self)
     }
 
     /// Sets nested tool calls for the chat message.
-    pub fn with_tool_calls(&mut self, tool_calls: &[LlamaChatToolCall]) {
+    pub fn with_tool_calls(mut self, tool_calls: &[LlamaChatToolCall]) -> Self {
         self.tool_calls = tool_calls.to_vec();
+        self
     }
 
     /// Gets the role of the chat message as a string slice.

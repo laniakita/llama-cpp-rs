@@ -148,6 +148,45 @@ struct common_chat_params_view {
 struct common_chat_params_view
 common_chat_params_get_view(const struct common_chat_params *params);
 
+enum llama_rs_common_grammar_trigger_type {
+  LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN = 0,
+  LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_WORD = 1,
+  LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN = 2,
+  LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL = 3,
+};
+
+struct common_grammar_trigger_view {
+  int32_t type;
+  const char *value;
+  int32_t token;
+};
+
+enum llama_rs_common_chat_role {
+  LLAMA_RS_COMMON_CHAT_ROLE_UNKNOWN,
+  LLAMA_RS_COMMON_CHAT_ROLE_SYSTEM,
+  LLAMA_RS_COMMON_CHAT_ROLE_ASSISTANT,
+  LLAMA_RS_COMMON_CHAT_ROLE_USER,
+  LLAMA_RS_COMMON_CHAT_ROLE_TOOL
+};
+
+struct common_chat_msg_delimiter_view {
+  int32_t role;
+  const char *delimiter;
+  const int32_t *tokens;
+  size_t tokens_count;
+};
+
+size_t common_chat_params_get_message_delimiters_count(
+    const struct common_chat_params *params);
+struct common_chat_msg_delimiter_view common_chat_params_get_message_delimiter(
+    const struct common_chat_params *params, size_t index);
+
+size_t common_chat_params_get_grammar_triggers_count(
+    const struct common_chat_params *params);
+struct common_grammar_trigger_view
+common_chat_params_get_grammar_trigger(const struct common_chat_params *params,
+                                       size_t index);
+
 size_t common_chat_params_get_preserved_tokens_count(
     const struct common_chat_params *params);
 const char *
@@ -164,7 +203,7 @@ void llama_rs_chat_parser_free(struct llama_rs_chat_parser *parser);
 
 llama_rs_status
 llama_rs_chat_parser_feed(struct llama_rs_chat_parser *parser,
-                          const char *chunk,
+                          const char *chunk, bool is_partial,
                           struct common_chat_msg_diffs **out_diffs);
 
 void common_chat_msg_diffs_free(struct common_chat_msg_diffs *diffs);

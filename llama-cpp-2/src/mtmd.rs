@@ -866,6 +866,51 @@ impl MtmdInputChunk {
         let chunk = NonNull::new(chunk).ok_or(MtmdInputChunkError::NullResult)?;
         Ok(Self { chunk, owned: true })
     }
+
+    /// Evaluate a single chunk using the multimodal context and LLAMA context.
+    ///
+    /// # Arguments
+    ///
+    /// * `mtmd_ctx` - The multimodal context
+    /// * `llama_ctx` - The LLAMA context
+    /// * `n_past` - Current position in the sequence
+    /// * `seq_id` - Sequence ID for the batch
+    /// * `n_batch` - Batch size for processing
+    /// * `logits_last` - Whether to compute logits for the last token only
+    ///
+    /// # Returns
+    ///
+    /// Returns the new `n_past` value on success.
+    pub fn eval_chunk_single(
+        &self,
+        mtmd_ctx: &MtmdContext,
+        llama_ctx: &LlamaContext,
+        n_past: llama_cpp_sys_2::llama_pos,
+        seq_id: llama_cpp_sys_2::llama_seq_id,
+        n_batch: i32,
+        logits_last: bool,
+    ) -> Result<llama_cpp_sys_2::llama_pos, MtmdEvalError> {
+        let mut new_n_past: llama_cpp_sys_2::llama_pos = 0;
+
+        let result = unsafe {
+            llama_cpp_sys_2::mtmd_helper_eval_chunk_single(
+                mtmd_ctx.context.as_ptr(),
+                llama_ctx.context.as_ptr(),
+                self.chunk.as_ptr(),
+                n_past,
+                seq_id,
+                n_batch,
+                logits_last,
+                &raw mut new_n_past,
+            )
+        };
+
+        if result == 0 {
+            Ok(new_n_past)
+        } else {
+            Err(MtmdEvalError::EvalFailure(result))
+        }
+    }
 }
 
 impl Drop for MtmdInputChunk {

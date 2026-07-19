@@ -307,148 +307,208 @@ llama_rs_mtp_speculative_accept(struct llama_rs_mtp_speculative *spec,
   }
 }
 
-extern "C" struct common_chat_templates_inputs* common_chat_templates_inputs_create(
-    bool add_generation_prompt,
-    bool enable_thinking,
-    int32_t reasoning_format,
-    int32_t continue_final_message,
-    bool parallel_tool_calls,
-    bool add_bos,
-    bool add_eos,
-    const char* json_schema,
-    const char* grammar,
-    const char* extra_context
-) {
-    try {
-        auto inputs = new common_chat_templates_inputs();
-        inputs->add_generation_prompt = add_generation_prompt;
-        inputs->enable_thinking = enable_thinking;
-        inputs->reasoning_format = static_cast<common_reasoning_format>(reasoning_format);
-        inputs->continue_final_message = static_cast<common_chat_continuation>(continue_final_message);
-        inputs->parallel_tool_calls = parallel_tool_calls;
-        inputs->add_bos = add_bos;
-        inputs->add_eos = add_eos;
-        
-        if (json_schema) inputs->json_schema = json_schema;
-        if (grammar) inputs->grammar = grammar;
-        
-        // Parse extra context JSON string back to dict
-        if (extra_context) {
-            auto parsed = nlohmann::json::parse(extra_context);
-            if (parsed.is_object()) {
-                for (const auto &[k, v] : parsed.items()) {
-                    inputs->chat_template_kwargs[k] = v.dump();
-                }
-            }
+extern "C" struct common_chat_templates_inputs *
+common_chat_templates_inputs_create(
+    bool add_generation_prompt, bool enable_thinking, int32_t reasoning_format,
+    int32_t continue_final_message, bool parallel_tool_calls, bool add_bos,
+    bool add_eos, const char *json_schema, const char *grammar,
+    const char *extra_context) {
+  try {
+    auto inputs = new common_chat_templates_inputs();
+    inputs->add_generation_prompt = add_generation_prompt;
+    inputs->enable_thinking = enable_thinking;
+    inputs->reasoning_format =
+        static_cast<common_reasoning_format>(reasoning_format);
+    inputs->continue_final_message =
+        static_cast<common_chat_continuation>(continue_final_message);
+    inputs->parallel_tool_calls = parallel_tool_calls;
+    inputs->add_bos = add_bos;
+    inputs->add_eos = add_eos;
+
+    if (json_schema)
+      inputs->json_schema = json_schema;
+    if (grammar)
+      inputs->grammar = grammar;
+
+    // Parse extra context JSON string back to dict
+    if (extra_context) {
+      auto parsed = nlohmann::json::parse(extra_context);
+      if (parsed.is_object()) {
+        for (const auto &[k, v] : parsed.items()) {
+          inputs->chat_template_kwargs[k] = v.dump();
         }
-        return inputs;
-    } catch (...) {
-        return nullptr;
+      }
     }
+    return inputs;
+  } catch (...) {
+    return nullptr;
+  }
 }
 
-extern "C" void common_chat_templates_inputs_free(struct common_chat_templates_inputs* inputs) {
-    delete inputs;
+extern "C" void
+common_chat_templates_inputs_free(struct common_chat_templates_inputs *inputs) {
+  delete inputs;
 }
 
 extern "C" llama_rs_status common_chat_templates_inputs_add_message(
-    struct common_chat_templates_inputs* inputs,
-    const char* role, const char* content, const char* reasoning_content,
-    const char* tool_name, const char* tool_call_id
-) {
-    if (!inputs) return LLAMA_RS_STATUS_INVALID_ARGUMENT;
-    try {
-        common_chat_msg msg;
-        if (role) msg.role = role;
-        if (content) msg.content = content;
-        if (reasoning_content) msg.reasoning_content = reasoning_content;
-        if (tool_name) msg.tool_name = tool_name;
-        if (tool_call_id) msg.tool_call_id = tool_call_id;
-        inputs->messages.push_back(std::move(msg));
-        return LLAMA_RS_STATUS_OK;
-    } catch (...) {
-        return LLAMA_RS_STATUS_EXCEPTION;
-    }
+    struct common_chat_templates_inputs *inputs, const char *role,
+    const char *content, const char *reasoning_content, const char *tool_name,
+    const char *tool_call_id) {
+  if (!inputs)
+    return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+  try {
+    common_chat_msg msg;
+    if (role)
+      msg.role = role;
+    if (content)
+      msg.content = content;
+    if (reasoning_content)
+      msg.reasoning_content = reasoning_content;
+    if (tool_name)
+      msg.tool_name = tool_name;
+    if (tool_call_id)
+      msg.tool_call_id = tool_call_id;
+    inputs->messages.push_back(std::move(msg));
+    return LLAMA_RS_STATUS_OK;
+  } catch (...) {
+    return LLAMA_RS_STATUS_EXCEPTION;
+  }
 }
 
-// Appends tool calls safely to the back of the vector, avoiding FFI pointer invalidation
-extern "C" llama_rs_status common_chat_templates_inputs_add_tool_call_to_last_message(
-    struct common_chat_templates_inputs* inputs,
-    const char* name, const char* arguments, const char* id
-) {
-    if (!inputs || inputs->messages.empty()) return LLAMA_RS_STATUS_INVALID_ARGUMENT;
-    try {
-        common_chat_tool_call call;
-        if (name) call.name = name;
-        if (arguments) call.arguments = arguments;
-        if (id) call.id = id;
-        inputs->messages.back().tool_calls.push_back(std::move(call));
-        return LLAMA_RS_STATUS_OK;
-    } catch (...) {
-        return LLAMA_RS_STATUS_EXCEPTION;
-    }
+// Appends tool calls safely to the back of the vector, avoiding FFI pointer
+// invalidation
+extern "C" llama_rs_status
+common_chat_templates_inputs_add_tool_call_to_last_message(
+    struct common_chat_templates_inputs *inputs, const char *name,
+    const char *arguments, const char *id) {
+  if (!inputs || inputs->messages.empty())
+    return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+  try {
+    common_chat_tool_call call;
+    if (name)
+      call.name = name;
+    if (arguments)
+      call.arguments = arguments;
+    if (id)
+      call.id = id;
+    inputs->messages.back().tool_calls.push_back(std::move(call));
+    return LLAMA_RS_STATUS_OK;
+  } catch (...) {
+    return LLAMA_RS_STATUS_EXCEPTION;
+  }
 }
 
 extern "C" llama_rs_status common_chat_templates_inputs_add_tool(
-    struct common_chat_templates_inputs* inputs,
-    const char* name, const char* description, const char* parameters
-) {
-    if (!inputs) return LLAMA_RS_STATUS_INVALID_ARGUMENT;
-    try {
-        common_chat_tool tool;
-        if (name) tool.name = name;
-        if (description) tool.description = description;
-        if (parameters) tool.parameters = parameters;
-        inputs->tools.push_back(std::move(tool));
-        return LLAMA_RS_STATUS_OK;
-    } catch (...) {
-        return LLAMA_RS_STATUS_EXCEPTION;
-    }
+    struct common_chat_templates_inputs *inputs, const char *name,
+    const char *description, const char *parameters) {
+  if (!inputs)
+    return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+  try {
+    common_chat_tool tool;
+    if (name)
+      tool.name = name;
+    if (description)
+      tool.description = description;
+    if (parameters)
+      tool.parameters = parameters;
+    inputs->tools.push_back(std::move(tool));
+    return LLAMA_RS_STATUS_OK;
+  } catch (...) {
+    return LLAMA_RS_STATUS_EXCEPTION;
+  }
 }
 
-extern "C" struct common_chat_params* common_chat_apply_template(
-    const struct llama_model *model,
-    const char *chat_template,
-    const struct common_chat_templates_inputs *inputs
-) {
-    if (!inputs) return nullptr;
-    try {
-        auto tmpls = common_chat_templates_init(model, chat_template ? chat_template : "", "", "");
-        auto res = common_chat_templates_apply(tmpls.get(), *inputs);
-        return new common_chat_params(std::move(res));
-    } catch (...) {
-        return nullptr;
-    }
+extern "C" struct common_chat_params *
+common_chat_apply_template(const struct llama_model *model,
+                           const char *chat_template,
+                           const struct common_chat_templates_inputs *inputs) {
+  if (!inputs)
+    return nullptr;
+  try {
+    auto tmpls = common_chat_templates_init(
+        model, chat_template ? chat_template : "", "", "");
+    auto res = common_chat_templates_apply(tmpls.get(), *inputs);
+    return new common_chat_params(std::move(res));
+  } catch (...) {
+    return nullptr;
+  }
 }
 
-extern "C" void common_chat_params_free(struct common_chat_params* params) {
-    delete params;
+extern "C" void common_chat_params_free(struct common_chat_params *params) {
+  delete params;
 }
 
-extern "C" struct common_chat_params_view common_chat_params_get_view(const struct common_chat_params* params) {
-    struct common_chat_params_view view = {0};
-    if (!params) return view;
-    
-    view.format = static_cast<int32_t>(params->format);
-    view.prompt = params->prompt.c_str();
-    view.grammar = params->grammar.c_str();
-    view.grammar_lazy = params->grammar_lazy;
-    view.generation_prompt = params->generation_prompt.c_str();
-    view.supports_thinking = params->supports_thinking;
-    view.thinking_start_tag = params->thinking_start_tag.c_str();
-    view.thinking_end_tag = params->thinking_end_tag.c_str();
-    view.parser = params->parser.c_str();
-    
-    return view; // Returned by value across FFI
+extern "C" struct common_chat_params_view
+common_chat_params_get_view(const struct common_chat_params *params) {
+  struct common_chat_params_view view = {0};
+  if (!params)
+    return view;
+
+  view.format = static_cast<int32_t>(params->format);
+  view.prompt = params->prompt.c_str();
+  view.grammar = params->grammar.c_str();
+  view.grammar_lazy = params->grammar_lazy;
+  view.generation_prompt = params->generation_prompt.c_str();
+  view.supports_thinking = params->supports_thinking;
+  view.thinking_start_tag = params->thinking_start_tag.c_str();
+  view.thinking_end_tag = params->thinking_end_tag.c_str();
+  view.parser = params->parser.c_str();
+
+  return view; // Returned by value across FFI
 }
 
-extern "C" size_t common_chat_params_get_preserved_tokens_count(const struct common_chat_params* params) {
-    return params ? params->preserved_tokens.size() : 0;
+extern "C" size_t common_chat_params_get_grammar_triggers_count(
+    const struct common_chat_params *params) {
+  return params ? params->grammar_triggers.size() : 0;
 }
 
-extern "C" const char* common_chat_params_get_preserved_token(const struct common_chat_params* params, size_t index) {
-    if (!params || index >= params->preserved_tokens.size()) return nullptr;
-    return params->preserved_tokens[index].c_str();
+extern "C" struct common_grammar_trigger_view
+common_chat_params_get_grammar_trigger(const struct common_chat_params *params,
+                                       size_t index) {
+  struct common_grammar_trigger_view view = {0};
+  if (!params || index >= params->grammar_triggers.size())
+    return view;
+
+  const auto &trigger = params->grammar_triggers[index];
+  view.type = static_cast<int32_t>(trigger.type);
+  view.value = trigger.value.c_str();
+  view.token = trigger.token;
+
+  return view;
+}
+
+extern "C" size_t common_chat_params_get_message_delimiters_count(
+    const struct common_chat_params *params) {
+  return params ? params->message_delimiters.delimiters.size() : 0;
+}
+
+extern "C" struct common_chat_msg_delimiter_view
+common_chat_params_get_message_delimiter(
+    const struct common_chat_params *params, size_t index) {
+  struct common_chat_msg_delimiter_view view = {0};
+  if (!params || index >= params->message_delimiters.delimiters.size())
+    return view;
+
+  const auto &delim = params->message_delimiters.delimiters[index];
+  view.role = static_cast<int32_t>(delim.role);
+  view.delimiter = delim.delimiter.c_str();
+  view.tokens = delim.tokens.empty() ? nullptr : delim.tokens.data();
+  view.tokens_count = delim.tokens.size();
+
+  return view;
+}
+
+extern "C" size_t common_chat_params_get_preserved_tokens_count(
+    const struct common_chat_params *params) {
+  return params ? params->preserved_tokens.size() : 0;
+}
+
+extern "C" const char *
+common_chat_params_get_preserved_token(const struct common_chat_params *params,
+                                       size_t index) {
+  if (!params || index >= params->preserved_tokens.size())
+    return nullptr;
+  return params->preserved_tokens[index].c_str();
 }
 
 struct llama_rs_chat_parser {
@@ -457,9 +517,9 @@ struct llama_rs_chat_parser {
   std::string generated_text;
 };
 
-extern "C" struct llama_rs_chat_parser *llama_rs_chat_parser_init(
-    const struct common_chat_params *params,
-    const struct common_chat_templates_inputs *inputs) {
+extern "C" struct llama_rs_chat_parser *
+llama_rs_chat_parser_init(const struct common_chat_params *params,
+                          const struct common_chat_templates_inputs *inputs) {
   if (!params || !inputs) {
     return nullptr;
   }
@@ -498,17 +558,17 @@ extern "C" void llama_rs_chat_parser_free(struct llama_rs_chat_parser *parser) {
   delete parser;
 }
 
-extern "C" llama_rs_status llama_rs_chat_parser_feed(
-    struct llama_rs_chat_parser *parser,
-    const char *chunk,
-    struct common_chat_msg_diffs **out_diffs) {
+extern "C" llama_rs_status
+llama_rs_chat_parser_feed(struct llama_rs_chat_parser *parser,
+                          const char *chunk, bool is_partial,
+                          struct common_chat_msg_diffs **out_diffs) {
   if (!parser || !out_diffs) {
     return LLAMA_RS_STATUS_INVALID_ARGUMENT;
   }
   try {
     parser->generated_text += chunk;
     common_chat_msg new_state =
-        common_chat_parse(parser->generated_text, true, parser->params);
+        common_chat_parse(parser->generated_text, is_partial, parser->params);
     auto *diffs = new std::vector<struct common_chat_msg_diff>(
         common_chat_msg_diff::compute_diffs(parser->msg_state, new_state));
     parser->msg_state = std::move(new_state);
@@ -519,29 +579,39 @@ extern "C" llama_rs_status llama_rs_chat_parser_feed(
   }
 }
 
-extern "C" void common_chat_msg_diffs_free(struct common_chat_msg_diffs *diffs) {
+extern "C" void
+common_chat_msg_diffs_free(struct common_chat_msg_diffs *diffs) {
   delete reinterpret_cast<std::vector<struct common_chat_msg_diff> *>(diffs);
 }
 
-extern "C" size_t common_chat_msg_diffs_get_size(const struct common_chat_msg_diffs* diffs) {
-    if (!diffs) return 0;
-    return reinterpret_cast<const std::vector<struct common_chat_msg_diff> *>(diffs)->size();
+extern "C" size_t
+common_chat_msg_diffs_get_size(const struct common_chat_msg_diffs *diffs) {
+  if (!diffs)
+    return 0;
+  return reinterpret_cast<const std::vector<struct common_chat_msg_diff> *>(
+             diffs)
+      ->size();
 }
 
-extern "C" struct common_chat_msg_diff_view common_chat_msg_diffs_get_view(const struct common_chat_msg_diffs* diffs, size_t index) {
-    struct common_chat_msg_diff_view view = {0};
-    if (!diffs) return view;
-    
-    auto *msg_diffs = reinterpret_cast<const std::vector<struct common_chat_msg_diff> *>(diffs);
-    if (index >= msg_diffs->size()) return view;
-    
-    const auto &diff = (*msg_diffs)[index];
-    view.reasoning_content = diff.reasoning_content_delta.c_str();
-    view.content = diff.content_delta.c_str();
-    view.tool_call_index = diff.tool_call_index;
-    view.tool_call_name = diff.tool_call_delta.name.c_str();
-    view.tool_call_arguments = diff.tool_call_delta.arguments.c_str();
-    view.tool_call_id = diff.tool_call_delta.id.c_str();
-    
+extern "C" struct common_chat_msg_diff_view
+common_chat_msg_diffs_get_view(const struct common_chat_msg_diffs *diffs,
+                               size_t index) {
+  struct common_chat_msg_diff_view view = {0};
+  if (!diffs)
     return view;
+
+  auto *msg_diffs =
+      reinterpret_cast<const std::vector<struct common_chat_msg_diff> *>(diffs);
+  if (index >= msg_diffs->size())
+    return view;
+
+  const auto &diff = (*msg_diffs)[index];
+  view.reasoning_content = diff.reasoning_content_delta.c_str();
+  view.content = diff.content_delta.c_str();
+  view.tool_call_index = diff.tool_call_index;
+  view.tool_call_name = diff.tool_call_delta.name.c_str();
+  view.tool_call_arguments = diff.tool_call_delta.arguments.c_str();
+  view.tool_call_id = diff.tool_call_delta.id.c_str();
+
+  return view;
 }
