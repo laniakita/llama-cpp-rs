@@ -7,6 +7,8 @@ use std::{
 use llama_cpp_sys_2::{
     common_chat_msg_diffs, common_chat_msg_diffs_free, common_chat_msg_diffs_get_size,
     common_chat_msg_diffs_get_view, common_chat_params, common_chat_params_free,
+    common_chat_params_get_grammar_trigger, common_chat_params_get_grammar_triggers_count,
+    common_chat_params_get_message_delimiter, common_chat_params_get_message_delimiters_count,
     common_chat_params_get_preserved_token, common_chat_params_get_preserved_tokens_count,
     common_chat_params_get_view, common_chat_params_view, common_chat_templates_inputs,
     common_chat_templates_inputs_add_message, common_chat_templates_inputs_add_tool,
@@ -16,6 +18,7 @@ use llama_cpp_sys_2::{
 };
 
 use crate::model::{LlamaChatMessage, LlamaChatTool, LlamaChatToolCall};
+use crate::token::LlamaToken;
 
 /// Errors that can occur when initializing the ChatParser
 #[derive(Debug, thiserror::Error)]
@@ -92,10 +95,39 @@ impl ChatParser {
     /// Returns [ChatParserFeedError::Exception] if llama.cpp throws an exception.
     /// Returns [ChatParserFeedError::NulError] if `piece` contains null bytes.
     /// Returns [ChatParserFeedError::ChatDiffCreationError] if `diffs_ptr` is null/missing.
-    pub fn feed_piece(&mut self, piece: &str) -> Result<Vec<ChatDiff>, ChatParserFeedError> {
+    pub fn feed(&mut self, piece: &str) -> Result<Vec<ChatDiff>, ChatParserFeedError> {
+        self.feed_piece(piece, true)
+    }
+
+    /// Call this to "repair" the feed parser and get the tool call diff following the end of a tool call, ie EOS.
+    pub fn finish(&mut self) -> Result<Vec<ChatDiff>, ChatParserFeedError> {
+        self.feed_piece("", false)
+    }
+
+    /// Feeds a newly generated token piece (as bytes) into the parser.
+    ///
+    /// If the newly added bytes end in the middle of a multi-byte UTF-8 character,
+    /// this method will safely buffer the bytes and return `Ok(None)` to wait for the
+    /// rest of the character in the next token.
+    ///
+    /// # Errors
+    /// Returns [ChatParserFeedError::InvalidArgument] if the input `piece` is null.
+    /// Returns [ChatParserFeedError::Exception] if llama.cpp throws an exception.
+    /// Returns [ChatParserFeedError::NulError] if `piece` contains null bytes.
+    /// Returns [ChatParserFeedError::ChatDiffCreationError] if `diffs_ptr` is null/missing.
+    fn feed_piece(
+        &mut self,
+        piece: &str,
+        is_partial: bool,
+    ) -> Result<Vec<ChatDiff>, ChatParserFeedError> {
         let mut diffs_ptr = ptr::null_mut();
         let diffs_res: llama_cpp_sys_2::llama_rs_status = unsafe {
-            llama_rs_chat_parser_feed(self.ptr, CString::new(piece)?.as_ptr(), &mut diffs_ptr)
+            llama_rs_chat_parser_feed(
+                self.ptr,
+                CString::new(piece)?.as_ptr(),
+                is_partial,
+                &mut diffs_ptr,
+            )
         };
         match diffs_res {
             llama_cpp_sys_2::LLAMA_RS_STATUS_OK => {
@@ -155,6 +187,7 @@ pub enum ChatDiffCreationError {
 pub struct ChatDiff {
     content: Option<String>,
     reasoning: Option<String>,
+    tool_call_index: Option<usize>,
     tool_call: Option<LlamaChatToolCall>,
 }
 
@@ -179,6 +212,11 @@ impl ChatDiff {
         let tool_call_name = Self::get_opt_string(view.tool_call_name);
         let tool_call_id = Self::get_opt_string(view.tool_call_id);
         let tool_call_arguments = Self::get_opt_string(view.tool_call_arguments);
+        let tool_call_index = if view.tool_call_index == usize::MAX {
+            None
+        } else {
+            Some(view.tool_call_index)
+        };
 
         if content.is_none()
             && reasoning.is_none()
@@ -192,11 +230,12 @@ impl ChatDiff {
         Ok(Self {
             content,
             reasoning,
-            tool_call: if let Some(id) = tool_call_id {
+            tool_call_index,
+            tool_call: if tool_call_name.is_some() || tool_call_arguments.is_some() || tool_call_id.is_some() {
                 match LlamaChatToolCall::new(
-                    tool_call_name.unwrap_or_default().into(),
-                    tool_call_arguments.unwrap_or_default().into(),
-                    id.into(),
+                    tool_call_name.unwrap_or_default(),
+                    tool_call_arguments.unwrap_or_default(),
+                    tool_call_id.unwrap_or_default(),
                 ) {
                     Ok(tc) => Some(tc),
                     Err(_) => None,
@@ -228,6 +267,11 @@ impl ChatDiff {
     /// Gets the tool call delta.
     pub fn tool_call(&self) -> Option<LlamaChatToolCall> {
         self.tool_call.clone()
+    }
+
+    /// Gets the tool call index delta.
+    pub fn tool_call_index(&self) -> Option<usize> {
+        self.tool_call_index
     }
 
     fn get_opt_string(ptr: *const i8) -> Option<String> {
@@ -309,6 +353,43 @@ impl LlamaChatParams {
             }
             tokens
         };
+        let grammar_triggers = unsafe {
+            let count = common_chat_params_get_grammar_triggers_count(self.ptr);
+            let mut triggers = Vec::with_capacity(count);
+            for i in 0..count {
+                let view = common_chat_params_get_grammar_trigger(self.ptr, i);
+                triggers.push(LlamaGrammarTrigger {
+                    trigger_type: <llama_cpp_sys_2::llama_rs_common_grammar_trigger_type>::from(
+                        view.type_ as u32,
+                    )
+                    .into(),
+                    value: get_cstring(view.value),
+                    token: LlamaToken::new(view.token),
+                });
+            }
+            triggers
+        };
+        let message_delimiters = unsafe {
+            let count = common_chat_params_get_message_delimiters_count(self.ptr);
+            let mut delimiters = Vec::with_capacity(count);
+            for i in 0..count {
+                let view = common_chat_params_get_message_delimiter(self.ptr, i);
+                let mut tokens = Vec::with_capacity(view.tokens_count);
+                if !view.tokens.is_null() && view.tokens_count > 0 {
+                    let slice = std::slice::from_raw_parts(view.tokens, view.tokens_count);
+                    for &t in slice {
+                        tokens.push(LlamaToken::new(t));
+                    }
+                }
+                delimiters.push(LlamaChatMessageDelimiter {
+                    role: <llama_cpp_sys_2::llama_rs_common_chat_role>::from(view.role as u32)
+                        .into(),
+                    delimiter: get_cstring(view.delimiter),
+                    tokens,
+                });
+            }
+            delimiters
+        };
         LlamaChatParamsView {
             format: <llama_cpp_sys_2::llama_rs_common_chat_format>::from(self.view.format as u32)
                 .into(),
@@ -321,6 +402,8 @@ impl LlamaChatParams {
             thinking_end_tag: get_cstring(self.view.thinking_end_tag),
             preserved_tokens,
             parser: get_cstring(self.view.parser),
+            grammar_triggers,
+            message_delimiters,
         }
     }
 }
@@ -397,6 +480,77 @@ pub struct LlamaChatParamsView {
     pub preserved_tokens: Vec<CString>,
     /// Parser (used to load the PEG Arena).
     pub parser: CString,
+    /// Grammar triggers (lazy triggers).
+    pub grammar_triggers: Vec<LlamaGrammarTrigger>,
+    /// Message delimiters
+    pub message_delimiters: Vec<LlamaChatMessageDelimiter>,
+}
+
+/// Chat role enum mapping to llama.cpp's `common_chat_role`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaChatRole {
+    Unknown,
+    System,
+    Assistant,
+    User,
+    Tool,
+}
+
+impl From<llama_cpp_sys_2::llama_rs_common_chat_role> for LlamaChatRole {
+    fn from(value: llama_cpp_sys_2::llama_rs_common_chat_role) -> Self {
+        match value {
+            llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_ROLE_UNKNOWN => Self::Unknown,
+            llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_ROLE_SYSTEM => Self::System,
+            llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_ROLE_ASSISTANT => Self::Assistant,
+            llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_ROLE_USER => Self::User,
+            llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_ROLE_TOOL => Self::Tool,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// A parsed message delimiter definition.
+#[derive(Debug, Clone)]
+pub struct LlamaChatMessageDelimiter {
+    pub role: LlamaChatRole,
+    pub delimiter: CString,
+    pub tokens: Vec<LlamaToken>,
+}
+
+/// Grammar trigger type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaGrammarTriggerType {
+    /// Trigger on a specific token.
+    Token,
+    /// Trigger on a specific word.
+    Word,
+    /// Trigger on a regex pattern.
+    Pattern,
+    /// Trigger on a full regex pattern.
+    PatternFull,
+}
+
+impl From<llama_cpp_sys_2::llama_rs_common_grammar_trigger_type> for LlamaGrammarTriggerType {
+    fn from(value: llama_cpp_sys_2::llama_rs_common_grammar_trigger_type) -> Self {
+        match value {
+            llama_cpp_sys_2::LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN => Self::Token,
+            llama_cpp_sys_2::LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_WORD => Self::Word,
+            llama_cpp_sys_2::LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN => Self::Pattern,
+            llama_cpp_sys_2::LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN_FULL => Self::PatternFull,
+            _ => Self::Word, // fallback
+        }
+    }
+}
+
+/// Grammar trigger
+#[derive(Debug, Clone)]
+pub struct LlamaGrammarTrigger {
+    /// Type of the trigger
+    pub trigger_type: LlamaGrammarTriggerType,
+    /// Value (string or regex)
+    pub value: CString,
+    /// Token ID
+    pub token: LlamaToken,
 }
 
 /// Convenience struct which gets converted to `generation_params`.
