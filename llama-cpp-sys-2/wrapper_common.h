@@ -148,6 +148,12 @@ struct common_chat_params_view {
 struct common_chat_params_view
 common_chat_params_get_view(const struct common_chat_params *params);
 
+char *llama_rs_common_chat_format_single(
+    const struct llama_model *model, const char *chat_template,
+    const struct common_chat_templates_inputs *past_inputs,
+    const struct common_chat_templates_inputs *new_msg_inputs, bool add_ass,
+    bool use_jinja);
+
 enum llama_rs_common_grammar_trigger_type {
   LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN = 0,
   LLAMA_RS_COMMON_GRAMMAR_TRIGGER_TYPE_WORD = 1,
