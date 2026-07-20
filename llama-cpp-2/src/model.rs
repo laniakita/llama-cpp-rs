@@ -1090,13 +1090,15 @@ impl LlamaModel {
     /// back to llama.cpp's new PEG parser (autoparser) under the hood.
     ///
     /// Either way, this supports parsing complex Jinja templates,
-    /// as well as constrained outputs via a GGUF based grammar, or JSON schema format
-    /// (useful for allowing unrestricted reasoning output, but grammar constrained content output).
+    /// as well as generating grammar constrained inputs and triggers [crate::chat_parser::LlamaGrammarTrigger] via a GGUF based grammar, or JSON schema format.
     ///
-    /// Use [`Self::chat_template`] to retrieve the template baked into the model (this is the preferred
-    /// mechanism as using the wrong chat template can result in really unexpected responses from the LLM).
+    /// The latter is useful for creating a sampler that lazily applies grammar constraints, e.g. to allow unrestricted reasoning, but grammar constrained output (see [common_sampler](https://github.com/ggml-org/llama.cpp/blob/571d0d540df04f25298d0e159e520d9fc62ed121/common/sampling.cpp#L111)
+    /// and [common_sampler_init](https://github.com/ggml-org/llama.cpp/blob/571d0d540df04f25298d0e159e520d9fc62ed121/common/sampling.cpp#L187) for inspiration).
     ///
-    /// Use the [`LlamaGenerationParams::builder`] to configure and build the generation parameters.
+    /// Optional: You can provide an override to the model's baked in chat template by passing `Some(&LlamaChatTemple)`,
+    /// otherwise the model's default template will be used instead (same template that can be derived from [`Self::chat_template`]).
+    ///  
+    /// Use [`LlamaGenerationParams`] to configure and build the generation parameters.
     ///
     /// # Errors
     /// There are many ways this can fail. See [`ApplyChatTemplateFullError`] for more information.
@@ -1128,6 +1130,52 @@ impl LlamaModel {
                     Err(e.into())
                 }
             }
+        }
+    }
+
+    /// Formats a single chat message using the model's chat template.
+    ///
+    /// This is useful for evaluating formatting differences for partial updates.
+    ///
+    /// Optional: You can provide an override to the model's baked in chat template by passing `Some(&LlamaChatTemple)` to `tmpl`,
+    /// otherwise the model's default template will be used instead (same template that can be derived from [`Self::chat_template`]).
+    ///
+    /// You probably want to set `add_ass` to true so that the generated string ends with the
+    /// opening tag of the assistant. If you fail to leave a hanging chat tag, the model will likely generate
+    /// one into the output and the output may also have unexpected output aside from that.
+    #[tracing::instrument(skip_all)]
+    pub fn chat_format_single(
+        &self,
+        tmpl: Option<&LlamaChatTemplate>,
+        past_params: &LlamaGenerationParams,
+        new_msg: &LlamaChatMessage,
+        add_ass: bool,
+        use_jinja: bool,
+    ) -> Result<String, ApplyChatTemplateErrorFull> {
+        let mut past_msg_state = past_params.as_ptr()?;
+
+        let new_msg_gen_params = past_params.clone().with_messages(&[new_msg.clone()]);
+        let mut new_msg_state = new_msg_gen_params.as_ptr()?;
+
+        let formatted_str = unsafe {
+            llama_cpp_sys_2::llama_rs_common_chat_format_single(
+                self.model.as_ptr(),
+                tmpl.map_or(ptr::null(), |t| t.as_c_str().as_ptr()),
+                past_msg_state.get(),
+                new_msg_state.get(),
+                add_ass,
+                use_jinja,
+            )
+        };
+
+        if formatted_str.is_null() {
+            Err(ApplyChatTemplateErrorFull::LlamaCppException)
+        } else {
+            let result = unsafe { std::ffi::CStr::from_ptr(formatted_str) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { llama_cpp_sys_2::llama_rs_string_free(formatted_str) };
+            Ok(result)
         }
     }
 }

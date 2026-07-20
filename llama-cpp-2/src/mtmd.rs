@@ -737,7 +737,7 @@ impl MtmdInputChunks {
         n_batch: i32,
         logits_last: bool,
     ) -> Result<llama_cpp_sys_2::llama_pos, MtmdEvalError> {
-        let mut new_n_past: llama_cpp_sys_2::llama_pos = 0;
+        let mut new_n_past: llama_cpp_sys_2::llama_pos = n_past;
 
         let result = unsafe {
             llama_cpp_sys_2::mtmd_helper_eval_chunks(
@@ -890,7 +890,7 @@ impl MtmdInputChunk {
         n_batch: i32,
         logits_last: bool,
     ) -> Result<llama_cpp_sys_2::llama_pos, MtmdEvalError> {
-        let mut new_n_past: llama_cpp_sys_2::llama_pos = 0;
+        let mut new_n_past: llama_cpp_sys_2::llama_pos = n_past;
 
         let result = unsafe {
             llama_cpp_sys_2::mtmd_helper_eval_chunk_single(

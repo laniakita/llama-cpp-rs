@@ -457,6 +457,26 @@ common_chat_params_get_view(const struct common_chat_params *params) {
   return view; // Returned by value across FFI
 }
 
+extern "C" char *llama_rs_common_chat_format_single(
+    const struct llama_model *model, const char *chat_template,
+    const struct common_chat_templates_inputs *past_inputs,
+    const struct common_chat_templates_inputs *new_msg_inputs, bool add_ass,
+    bool use_jinja) {
+  if (!past_inputs || !new_msg_inputs || new_msg_inputs->messages.empty()) {
+    return nullptr;
+  }
+  try {
+    auto tmpls = common_chat_templates_init(
+        model, chat_template ? chat_template : "", "", "");
+    std::string res = ::common_chat_format_single(
+        tmpls.get(), past_inputs->messages, new_msg_inputs->messages.front(),
+        add_ass, use_jinja);
+    return llama_rs_dup_string(res);
+  } catch (...) {
+    return nullptr;
+  }
+}
+
 extern "C" size_t common_chat_params_get_grammar_triggers_count(
     const struct common_chat_params *params) {
   return params ? params->grammar_triggers.size() : 0;

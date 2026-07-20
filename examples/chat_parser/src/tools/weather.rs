@@ -57,7 +57,10 @@ pub fn get_geocode_tool_definition() -> Result<LlamaChatTool, std::ffi::NulError
 }
 
 pub fn execute_weather(arguments_json: &str) -> String {
-    println!("[DEBUG] execute_weather called with arguments: {}", arguments_json);
+    println!(
+        "[DEBUG] execute_weather called with arguments: {}",
+        arguments_json
+    );
     let args: WeatherToolArguments = match serde_json::from_str(arguments_json) {
         Ok(a) => a,
         Err(e) => {
@@ -91,7 +94,10 @@ pub fn execute_weather(arguments_json: &str) -> String {
 }
 
 pub fn execute_geocode(arguments_json: &str) -> String {
-    println!("[DEBUG] execute_geocode called with arguments: {}", arguments_json);
+    println!(
+        "[DEBUG] execute_geocode called with arguments: {}",
+        arguments_json
+    );
     let args: GeocodeToolArguments = match serde_json::from_str(arguments_json) {
         Ok(a) => a,
         Err(e) => {
@@ -101,7 +107,10 @@ pub fn execute_geocode(arguments_json: &str) -> String {
     };
 
     let city_query = args.city.replace(" ", "+");
-    let geo_url = format!("https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=en&format=json", city_query);
+    let geo_url = format!(
+        "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=en&format=json",
+        city_query
+    );
     println!("[DEBUG] execute_geocode requesting URL: {}", geo_url);
 
     let geo_resp = match reqwest::blocking::get(&geo_url) {
@@ -130,7 +139,10 @@ pub fn execute_geocode(arguments_json: &str) -> String {
 
     let results = geo_json.get("results").and_then(|r| r.as_array());
     if results.is_none() || results.unwrap().is_empty() {
-        println!("[DEBUG] execute_geocode found no results for city: {}", args.city);
+        println!(
+            "[DEBUG] execute_geocode found no results for city: {}",
+            args.city
+        );
         return format!("City '{}' not found.", args.city);
     }
 
@@ -143,5 +155,6 @@ pub fn execute_geocode(arguments_json: &str) -> String {
     serde_json::json!({
         "latitude": lat,
         "longitude": lon
-    }).to_string()
+    })
+    .to_string()
 }
