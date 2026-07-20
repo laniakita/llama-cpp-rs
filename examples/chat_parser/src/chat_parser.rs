@@ -12,8 +12,8 @@ use clap::Parser;
 use encoding_rs::{Decoder, UTF_8};
 
 use llama_cpp_2::chat_parser::{
-    ChatDiff, ChatParser, ChatParserInitError, LlamaChatMessageDelimiter, LlamaChatParamsView,
-    LlamaGenerationParams, LlamaGrammarTriggerType,
+    ChatDiff, ChatParser, LlamaChatMessageDelimiter, LlamaChatParamsView, LlamaGenerationParams,
+    LlamaGrammarTriggerType,
 };
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::context::LlamaContext;
@@ -24,9 +24,7 @@ use llama_cpp_2::mtmd::{
 };
 
 use llama_cpp_2::llama_backend::LlamaBackend;
-use llama_cpp_2::model::{
-    LlamaChatMessage, LlamaChatTemplate, LlamaChatTool, LlamaChatToolCall, LlamaModel,
-};
+use llama_cpp_2::model::{LlamaChatMessage, LlamaChatTool, LlamaChatToolCall, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
 use llama_cpp_2::token::data::LlamaTokenData;
@@ -70,7 +68,7 @@ pub struct ChatParserCliParams {
     #[arg(short = 't', long = "threads", value_name = "N", default_value = "4")]
     pub n_threads: i32,
     /// Number of tokens to process in a batch during eval chunks
-    #[arg(long = "batch-size", value_name = "b", default_value = "1")]
+    #[arg(long = "batch-size", value_name = "b", default_value = "512")]
     pub batch_size: i32,
     /// Maximum number of tokens in context
     #[arg(long = "n-tokens", value_name = "N", default_value = "4096")]
@@ -170,6 +168,9 @@ impl<'a> ChatParserCliContext<'a> {
         mtp_ctx: Option<LlamaContext<'a>>,
         params: &ChatParserCliParams,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let t_initial = std::time::Instant::now();
+        let start_timestamp = chrono::Utc::now().to_rfc3339();
+
         let mut prompt = params.prompt.clone();
 
         let default_marker = llama_cpp_2::mtmd::mtmd_default_marker().to_string();
@@ -198,6 +199,8 @@ impl<'a> ChatParserCliContext<'a> {
         for audio_path in &params.audio {
             self.load_media(audio_path)?;
         }
+
+        let mut next_turn_delta = String::new();
 
         let mut history = vec![
             LlamaChatMessage::new("system".into(), "You are a helpful assistant.".into())?,
@@ -229,40 +232,101 @@ impl<'a> ChatParserCliContext<'a> {
 
         let mut session = ChatSession::new(params.n_predict, batch, active_context, mtmd_ctx);
 
+        let mut responses: Vec<Response> = Vec::new();
+
+        let model_arch = model
+            .meta_val_str("general.architecture")
+            .unwrap_or_else(|_| "Unknown".to_string());
+        let model_name = model
+            .meta_val_str("general.name")
+            .unwrap_or_else(|_| "Unknown".to_string());
+
+        let (using_mtp, mtp_model_arch, mtp_model_name) = match &mut session.active_context {
+            ActiveContext::Mtp(ref mut mtp) => {
+                let name = mtp
+                    .draft_context_mut()
+                    .model
+                    .meta_val_str("general.name")
+                    .unwrap_or_else(|_| "Unknown".to_string());
+                let arch = mtp
+                    .draft_context_mut()
+                    .model
+                    .meta_val_str("general.architecture")
+                    .unwrap_or_else(|_| "Unknown".to_string());
+                (true, arch, name)
+            }
+            ActiveContext::Standard(_) => (false, "N/A".to_string(), "N/A".to_string()),
+        };
+
         loop {
             println!("\n--- [TURN {}] ---", history.len() / 2);
+            let turn_start_time = std::time::Instant::now();
 
-            let (chat_params_view, sampler, parser, prompt_tokens) = session.apply_turn(
-                model,
-                &history,
-                &bitmap_refs,
-                &tools,
-                true,
-                params.batch_size,
-            )?;
+            let (chat_params_view, sampler, parser, prompt_tokens, gen_params) = session
+                .apply_turn(
+                    model,
+                    &history,
+                    &next_turn_delta,
+                    &bitmap_refs,
+                    &tools,
+                    true,
+                    params.batch_size,
+                )?;
 
             let mut turn =
                 ChatTurn::new(sampler, parser, model, &chat_params_view.message_delimiters);
 
-            let assistant_msg = match &session.active_context {
-                ActiveContext::Mtp(_) => turn.generate_with_mtp(&mut session, &prompt_tokens)?,
-                ActiveContext::Standard(_) => turn.generate_classic(&mut session)?,
+            let n_past_before_generation = session.n_past;
+
+            let (assistant_msg, response) = match &session.active_context {
+                ActiveContext::Mtp(_) => {
+                    turn.generate_with_mtp(&mut session, &prompt_tokens, turn_start_time)?
+                }
+                ActiveContext::Standard(_) => {
+                    turn.generate_classic(&mut session, turn_start_time)?
+                }
             };
+            responses.push(response);
+
+            let mut turn_delta = String::new();
+            turn_delta.push_str(&model.chat_format_single(
+                None,
+                &gen_params,
+                &assistant_msg,
+                false,
+                true,
+            )?);
 
             let tool_calls = assistant_msg.tool_calls().to_vec();
             history.push(assistant_msg);
 
             if tool_calls.is_empty() {
-                println!("\n[FINISHED] No more tool calls.");
+                println!("\n[FINISHED] Assistant did not make any more tool calls.");
                 break;
             }
 
+            // Roll back the context so we don't duplicate the assistant message
+            // when it's re-evaluated via turn_delta in the next iteration.
+            match &mut session.active_context {
+                ActiveContext::Mtp(mtp) => {
+                    mtp.target_context_mut().kv_cache_seq_rm(
+                        0,
+                        Some(n_past_before_generation as u32),
+                        None,
+                    )?;
+                    mtp.draft_context_mut().kv_cache_seq_rm(
+                        0,
+                        Some(n_past_before_generation as u32),
+                        None,
+                    )?;
+                }
+                ActiveContext::Standard(ctx) => {
+                    ctx.kv_cache_seq_rm(0, Some(n_past_before_generation as u32), None)?;
+                }
+            }
+            session.n_past = n_past_before_generation;
+
             for tool_call in tool_calls {
-                println!(
-                    "\nExecuting tool: {} with args: {}",
-                    tool_call.name(),
-                    tool_call.arguments()
-                );
                 let result = if tool_call.name() == "geocode_city" {
                     crate::tools::weather::execute_geocode(&tool_call.arguments())
                 } else if tool_call.name() == "get_current_weather" {
@@ -271,39 +335,63 @@ impl<'a> ChatParserCliContext<'a> {
                     format!("Unknown tool: {}", tool_call.name())
                 };
 
-                println!("\nTool result: {}", result);
+                let tool_msg = LlamaChatMessage::new("tool".into(), result.to_string())?
+                    .with_tool_call_id(tool_call.id().to_string())?
+                    .with_tool_name(tool_call.name().to_string())?;
+                let new_params = &gen_params.clone().with_messages(&history);
 
-                history.push(
-                    LlamaChatMessage::new("tool".into(), result.to_string())?
-                        .with_tool_call_id(tool_call.id().to_string())?
-                        .with_tool_name(tool_call.name().to_string())?,
-                );
+                turn_delta.push_str(&model.chat_format_single(
+                    None,
+                    &new_params,
+                    &tool_msg,
+                    true,
+                    true,
+                )?);
+                history.push(tool_msg);
             }
-        }
 
-        println!("\n--- Final Chat History State ---");
-        for (i, msg) in history.iter().enumerate() {
-            println!("Message {}: Role = {}", i, msg.role());
-            if !msg.content().is_empty() {
-                println!("  Content: {}", msg.content());
-            }
-            if !msg.reasoning_content().is_empty() {
-                println!("  Reasoning: {}", msg.reasoning_content());
-            }
-            if !msg.tool_call_id().is_empty() {
-                println!("  Tool Call ID: {}", msg.tool_call_id());
-            }
-            for (j, tc) in msg.tool_calls().iter().enumerate() {
-                println!(
-                    "  Tool Call {}: ID={}, Name={}, Args={}",
-                    j,
-                    tc.id(),
-                    tc.name(),
-                    tc.arguments()
-                );
-            }
+            next_turn_delta = turn_delta;
         }
-        println!("--------------------------------");
+        let elapsed = t_initial.elapsed().as_secs_f64();
+        let end_timestamp = responses
+            .last()
+            .map_or_else(|| chrono::Utc::now(), |l| l.finished_at)
+            .to_rfc3339();
+
+        let total_tool_calls = history.iter().filter(|m| m.role() == "tool").count();
+        let tokens_per_second_avg = responses.iter().map(|r| r.tokens_per_second).sum::<f32>()
+            as f64
+            / responses.len() as f64;
+        let total_tokens = responses.iter().map(|r| r.tokens_generated).sum::<usize>();
+        let tokens_per_second_actual = total_tokens as f64 / elapsed;
+
+        let ttft_sum: f64 = responses.iter().map(|r| r.time_to_first_token).sum();
+        let ttft_avg = if !responses.is_empty() {
+            ttft_sum / responses.len() as f64
+        } else {
+            0.0
+        };
+
+        println!(
+            r"--- Final Chat History State ---
+RESPONSES: {responses:#?}
+CHAT HISTORY:{history:#?}
+----------- METRICS ------------
+MODEL: {model_arch}:{model_name}
+MULTIMODAL: true
+MTP_ENABLED: {using_mtp}
+MTP_MODEL: {mtp_model_arch}:{mtp_model_name}
+START_TIME: {start_timestamp}
+END_TIME: {end_timestamp}
+TOTAL_RUN_TIME: {elapsed:.2} seconds
+TOTAL_TOKENS: {total_tokens}
+TOTAL_TOOL_CALLS: {total_tool_calls}
+AVERAGE_TOKENS_PER_SECOND: {tokens_per_second_avg}
+ACTUAL_TOKENS_PER_SECOND: {tokens_per_second_actual}
+SUM_TIME_TO_FIRST_TOKEN: {ttft_sum:.4} seconds
+AVERAGE_TIME_TO_FIRST_TOKEN: {ttft_avg:.4} seconds
+--------------------------------"
+        );
 
         Ok(())
     }
@@ -387,7 +475,7 @@ impl CommonSampler {
                             continue;
                         }
                     }
-                    println!("eval_message: prefill token: {} = {}", token, piece);
+                    //println!("eval_message: prefill token: {} = {}", token, piece);
                     prefill_tokens.push(token);
                 }
             }
@@ -442,7 +530,6 @@ struct ChatSession<'a> {
     pub n_predict: i32,
     pub n_past: i32,
     pub chunk_offset: usize,
-    pub prev_prompt: Vec<LlamaToken>,
     pub batch: LlamaBatch<'a>,
     pub active_context: ActiveContext<'a>,
     pub mtmd_context: MtmdContext,
@@ -461,7 +548,6 @@ impl<'a> ChatSession<'a> {
             batch,
             active_context,
             chunk_offset: 0,
-            prev_prompt: Vec::default(),
             mtmd_context,
         }
     }
@@ -470,6 +556,7 @@ impl<'a> ChatSession<'a> {
         &mut self,
         model: &LlamaModel,
         history: &[LlamaChatMessage],
+        delta: &str,
         bitmaps: &[&MtmdBitmap],
         tools: &[LlamaChatTool],
         add_bos: bool,
@@ -480,6 +567,7 @@ impl<'a> ChatSession<'a> {
             CommonSampler,
             ChatParser,
             Vec<LlamaToken>,
+            LlamaGenerationParams,
         ),
         Box<dyn std::error::Error>,
     > {
@@ -497,6 +585,7 @@ impl<'a> ChatSession<'a> {
             .apply_chat_template_with_params(None, &gen_params)
             .map_err(|e| format!("Failed to apply chat template: {e}"))?;
         let chat_params_view = chat_params.view();
+
         println!("Chat params: {:#?}", &chat_params_view);
 
         let common_sampler = CommonSampler::new(model, &chat_params_view)?;
@@ -509,15 +598,13 @@ impl<'a> ChatSession<'a> {
         }
 
         self.chunk_offset = 0;
-        self.n_past = 0;
-
-        match &mut self.active_context {
-            ActiveContext::Standard(ctx) => ctx.clear_kv_cache(),
-            ActiveContext::Mtp(ctx) => ctx.target_context_mut().clear_kv_cache(),
-        }
 
         let input_text = MtmdInputText {
-            text: chat_params_view.prompt.to_string_lossy().to_string(),
+            text: if !delta.is_empty() {
+                delta.to_string()
+            } else {
+                chat_params_view.prompt.to_string_lossy().to_string()
+            },
             add_special: add_bos,
             parse_special: true,
         };
@@ -547,7 +634,13 @@ impl<'a> ChatSession<'a> {
         }
         self.chunk_offset += chunks.len();
 
-        Ok((chat_params_view, common_sampler, chat_parser, prompt_tokens))
+        Ok((
+            chat_params_view,
+            common_sampler,
+            chat_parser,
+            prompt_tokens,
+            gen_params,
+        ))
     }
 }
 
@@ -575,11 +668,11 @@ impl<'a> ChatTurn<'a> {
     }
 
     /// Generates a response by sampling tokens from the model
-    #[deprecated(note = "This is purely an example, DO NOT USE.")]
     fn generate_classic(
         &mut self,
         session: &mut ChatSession<'a>,
-    ) -> Result<LlamaChatMessage, Box<dyn std::error::Error>> {
+        turn_start_time: std::time::Instant,
+    ) -> Result<(LlamaChatMessage, Response), Box<dyn std::error::Error>> {
         let t_initial = std::time::Instant::now();
 
         let session_ctx = match &mut session.active_context {
@@ -594,72 +687,32 @@ impl<'a> ChatTurn<'a> {
             session.n_predict
         };
         let mut decoder = UTF_8.new_decoder();
+        let mut response = Response::default();
 
-        let mut response = Response {
-            reasoning: "".into(),
-            content: "".into(),
-            tool_calls: Vec::new(),
-            started_at: std::time::SystemTime::now(),
-            finished_at: std::time::SystemTime::now(),
-            tokens_generated: 0,
-            tokens_per_second: 0.0,
-        };
-
-        let handle_token = |token: LlamaToken,
-                            dcdr: &mut Decoder,
-                            parser: &mut ChatParser,
-                            res: &mut Response|
-         -> Result<bool, Box<dyn std::error::Error>> {
-            res.tokens_generated += 1;
-            let piece = self.model.token_to_piece(token, dcdr, true, None)?;
-            if let Ok(diffs) = parser.feed(&piece) {
-                StreamChunk::from_diffs(&diffs).iter().for_each(|chunk| {
-                    if let Some(rsn) = &chunk.reasoning {
-                        print!("{rsn}");
-                        res.reasoning.push_str(rsn);
-                    }
-                    if let Some(content) = &chunk.content {
-                        print!("{content}");
-                        res.content.push_str(content);
-                    }
-                    if let Some(tcs) = &chunk.tool_call {
-                        if let Some(idx) = chunk.tool_call_index {
-                            if idx >= res.tool_calls.len() {
-                                res.tool_calls.push(ToolCall {
-                                    name: tcs.name().to_string(),
-                                    arguments: tcs.arguments().to_string(),
-                                    id: tcs.id().to_string(),
-                                });
-                            } else {
-                                let tc = &mut res.tool_calls[idx];
-                                tc.name.push_str(&tcs.name());
-                                tc.arguments.push_str(&tcs.arguments());
-                                if !tcs.id().is_empty() {
-                                    tc.id.push_str(&tcs.id());
-                                }
-                            }
-                        }
-                    }
-                    let _ = io::stdout().flush();
-                });
-            }
-            Ok(false)
-        };
+        let mut sample_idx = -1;
         for _i in 0..max_predict {
-            let token = self.sampler.sample(&session_ctx, -1)?;
-            generated_tokens.push(token);
+            let token = self.sampler.sample(&session_ctx, sample_idx)?;
+            self.sampler.accept(token);
 
-            if self.model.is_eog_token(token) || token == self.model.token_eos() {
-                println!();
+            if generated_tokens.is_empty() {
+                response.time_to_first_token = turn_start_time.elapsed().as_secs_f64();
+            }
+
+            if self.should_stop(&generated_tokens) || token == self.model.token_eos() {
+                if let Ok(final_diffs) = self.parser.finish() {
+                    Self::handle_diffs(&final_diffs, &mut response);
+                }
                 break;
             }
 
-            if self.should_stop(&generated_tokens) {
-                println!("Hit delimiter! stopping...");
-                break;
-            }
-
-            handle_token(token, &mut decoder, &mut self.parser, &mut response)?;
+            Self::handle_token(
+                token,
+                &mut decoder,
+                &mut self.parser,
+                &mut response,
+                &mut generated_tokens,
+                &self.model,
+            )?;
 
             // Prepare next batch
             session.batch.clear();
@@ -668,14 +721,16 @@ impl<'a> ChatTurn<'a> {
 
             // Decode
             session_ctx.decode(&mut session.batch)?;
+            sample_idx = 0;
         }
         let t_final = t_initial.elapsed();
-        response.finished_at = std::time::SystemTime::now();
+        response.finished_at = chrono::Utc::now();
         response.tokens_per_second = response.tokens_generated as f32 / t_final.as_secs_f32();
 
-        let mut assistant_msg = LlamaChatMessage::new("assistant".into(), response.content)?;
+        let mut assistant_msg =
+            LlamaChatMessage::new("assistant".into(), response.content.clone())?;
         if !response.reasoning.is_empty() {
-            assistant_msg = assistant_msg.with_reasoning_content(response.reasoning)?;
+            assistant_msg = assistant_msg.with_reasoning_content(response.reasoning.clone())?;
         }
         if !response.tool_calls.is_empty() {
             assistant_msg = assistant_msg.with_tool_calls(
@@ -690,7 +745,7 @@ impl<'a> ChatTurn<'a> {
             );
         }
 
-        Ok(assistant_msg)
+        Ok((assistant_msg, response))
     }
 
     /// Generates a response by sampling tokens from the model with a Multi-Token_Prediction companion model.
@@ -698,7 +753,8 @@ impl<'a> ChatTurn<'a> {
         &mut self,
         session: &mut ChatSession<'a>,
         prompt_tokens: &[LlamaToken],
-    ) -> Result<LlamaChatMessage, Box<dyn std::error::Error>> {
+        turn_start_time: std::time::Instant,
+    ) -> Result<(LlamaChatMessage, Response), Box<dyn std::error::Error>> {
         let t_initial = std::time::Instant::now();
 
         let max_predict = if session.n_predict < 0 {
@@ -714,89 +770,33 @@ impl<'a> ChatTurn<'a> {
         };
 
         let mut id_last = self.sampler.sample(mtp.target_context(), -1)?;
+        let ttft = turn_start_time.elapsed().as_secs_f64();
         self.sampler.accept(id_last);
 
         mtp.begin(prompt_tokens)
             .map_err(|err| format!("Failed to start speculative decoding: {err:#?}"))?;
         println!("mtp loaded");
 
-        let mut response = Response {
-            reasoning: "".into(),
-            content: "".into(),
-            tool_calls: Vec::new(),
-            started_at: std::time::SystemTime::now(),
-            finished_at: std::time::SystemTime::now(),
-            tokens_generated: 0,
-            tokens_per_second: 0.0,
-        };
+        let mut response = Response::default();
+        response.time_to_first_token = ttft;
 
         let mut generated_tokens = Vec::new();
 
-        let handle_diffs =
-            |diffs: Vec<ChatDiff>, res: &mut Response, generated_tokens: &mut Vec<LlamaToken>| {
-                StreamChunk::from_diffs(&diffs).iter().for_each(|chunk| {
-                    if let Some(rsn) = &chunk.reasoning {
-                        //print!("{rsn}");
-                        res.reasoning.push_str(rsn);
-                    }
-                    if let Some(content) = &chunk.content {
-                        //print!("{content}");
-                        res.content.push_str(content);
-                    }
-                    if let Some(tcs) = &chunk.tool_call {
-                        if let Some(idx) = chunk.tool_call_index {
-                            if idx >= res.tool_calls.len() {
-                                res.tool_calls.push(ToolCall {
-                                    name: tcs.name().to_string(),
-                                    arguments: tcs.arguments().to_string(),
-                                    id: tcs.id().to_string(),
-                                });
-                            } else {
-                                let tc = &mut res.tool_calls[idx];
-                                tc.name.push_str(&tcs.name());
-                                tc.arguments.push_str(&tcs.arguments());
-                                if !tcs.id().is_empty() {
-                                    tc.id.push_str(&tcs.id());
-                                }
-                            }
-                        }
-                    }
-                    //let _ = io::stdout().flush();
-                });
-            };
-
-        let handle_token = |token: LlamaToken,
-                            dcdr: &mut Decoder,
-                            parser: &mut ChatParser,
-                            res: &mut Response,
-                            generated_tokens: &mut Vec<LlamaToken>|
-         -> Result<(), Box<dyn std::error::Error>> {
-            res.tokens_generated += 1;
-            generated_tokens.push(token);
-            let piece = self.model.token_to_piece(token, dcdr, true, None)?;
-            print!("{piece}");
-            if let Ok(diffs) = parser.feed(&piece) {
-                handle_diffs(diffs, res, generated_tokens);
-            }
-            Ok(())
-        };
-
         for _ in 0..max_predict {
             if self.should_stop(&generated_tokens) || id_last == self.model.token_eos() {
-                println!("EOS -> Stopping...");
                 if let Ok(final_diffs) = self.parser.finish() {
-                    println!("final diffs: {final_diffs:#?}");
-                    handle_diffs(final_diffs, &mut response, &mut generated_tokens);
+                    Self::handle_diffs(&final_diffs, &mut response);
                 }
                 break;
             }
 
-            handle_token(
+            Self::handle_token(
                 id_last,
                 &mut decoder,
                 &mut self.parser,
                 &mut response,
                 &mut generated_tokens,
+                &self.model,
             )?;
 
             let draft_tokens = mtp.draft(session.n_past, id_last, &[])?;
@@ -823,12 +823,13 @@ impl<'a> ChatTurn<'a> {
                     n_accepted += 1;
                     self.sampler.accept(target_sampled_token);
 
-                    handle_token(
+                    Self::handle_token(
                         target_sampled_token,
                         &mut decoder,
                         &mut self.parser,
                         &mut response,
                         &mut generated_tokens,
+                        &self.model,
                     )?;
                 } else {
                     new_id_last = Some(target_sampled_token);
@@ -870,13 +871,15 @@ impl<'a> ChatTurn<'a> {
             }
         }
         let t_final = t_initial.elapsed();
-        response.finished_at = std::time::SystemTime::now();
+        response.finished_at = chrono::Utc::now();
         response.tokens_per_second = response.tokens_generated as f32 / t_final.as_secs_f32();
+
         println!("{response:#?}");
 
-        let mut assistant_msg = LlamaChatMessage::new("assistant".into(), response.content)?;
+        let mut assistant_msg =
+            LlamaChatMessage::new("assistant".into(), response.content.clone())?;
         if !response.reasoning.is_empty() {
-            assistant_msg = assistant_msg.with_reasoning_content(response.reasoning)?;
+            assistant_msg = assistant_msg.with_reasoning_content(response.reasoning.clone())?;
         }
         if !response.tool_calls.is_empty() {
             assistant_msg = assistant_msg.with_tool_calls(
@@ -891,7 +894,69 @@ impl<'a> ChatTurn<'a> {
             );
         }
 
-        Ok(assistant_msg)
+        Ok((assistant_msg, response))
+    }
+
+    /// Helper function to process a single token and update a response.
+    fn handle_token(
+        token: LlamaToken,
+        dcdr: &mut Decoder,
+        parser: &mut ChatParser,
+        res: &mut Response,
+        generated_tokens: &mut Vec<LlamaToken>,
+        model: &LlamaModel,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        res.tokens_generated += 1;
+        generated_tokens.push(token);
+        let piece = model.token_to_piece(token, dcdr, true, None)?;
+        if let Ok(diffs) = parser.feed(&piece) {
+            Self::handle_diffs(&diffs, res);
+        }
+        Ok(())
+    }
+
+    /// Processes a slice of `ChatDiff` and updates the `response` accordingly.
+    /// This method handles updating the response's reasoning, content, and tool calls based on the diffs.
+    fn handle_diffs(diffs: &[ChatDiff], response: &mut Response) {
+        StreamChunk::from_diffs(&diffs).iter().for_each(|chunk| {
+            if let Some(rsn) = &chunk.reasoning {
+                print!("{rsn}");
+                response.reasoning.push_str(rsn);
+            }
+            if let Some(content) = &chunk.content {
+                print!("{content}");
+                response.content.push_str(content);
+            }
+            if let Some(tcs) = &chunk.tool_call {
+                // Print each chunk of TCS as it streams in.
+                if !tcs.id().is_empty() {
+                    print!("{}", tcs.id());
+                }
+                if !tcs.name().is_empty() {
+                    print!("{}", tcs.name())
+                }
+                if !tcs.arguments().is_empty() {
+                    print!("{}", tcs.arguments());
+                }
+
+                if let Some(idx) = chunk.tool_call_index {
+                    if idx >= response.tool_calls.len() {
+                        response.tool_calls.push(ToolCall {
+                            name: tcs.name().to_string(),
+                            arguments: tcs.arguments().to_string(),
+                            id: tcs.id().to_string(),
+                        });
+                    } else {
+                        let tc = &mut response.tool_calls[idx];
+                        tc.name.push_str(&tcs.name());
+                        tc.arguments.push_str(&tcs.arguments());
+                        if !tcs.id().is_empty() {
+                            tc.id.push_str(&tcs.id());
+                        }
+                    }
+                }
+            }
+        });
     }
 
     fn should_stop(&self, tokens: &[LlamaToken]) -> bool {
@@ -931,14 +996,32 @@ struct ToolCall {
 #[allow(unused)]
 #[derive(Debug, Clone)]
 struct Response {
+    pub role: String,
     pub reasoning: String,
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
 
-    pub started_at: std::time::SystemTime,
-    pub finished_at: std::time::SystemTime,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub finished_at: chrono::DateTime<chrono::Utc>,
     pub tokens_generated: usize,
     pub tokens_per_second: f32,
+    pub time_to_first_token: f64,
+}
+
+impl Default for Response {
+    fn default() -> Self {
+        Self {
+            role: "assistant".into(),
+            reasoning: String::default(),
+            content: String::default(),
+            tool_calls: Vec::default(),
+            started_at: chrono::Utc::now(),
+            finished_at: chrono::Utc::now(),
+            tokens_generated: 0,
+            tokens_per_second: 0.0,
+            time_to_first_token: 0.0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1009,7 +1092,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let context_params = LlamaContextParams::default()
         .with_n_threads(params.n_threads)
-        .with_n_batch(params.batch_size.max(256).try_into()?)
+        .with_n_batch(params.batch_size.try_into()?)
         .with_n_ctx(Some(params.n_tokens));
     let context = model.new_context(&backend, context_params.clone())?;
 
