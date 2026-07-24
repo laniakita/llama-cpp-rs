@@ -222,6 +222,7 @@ impl<'a> ChatParserCliContext<'a> {
                     n_max: 2,
                     n_min: 0,
                     p_min: 0.85,
+                    n_seq: 1,
                 },
             )?),
             None => ActiveContext::Standard(context),
@@ -773,7 +774,7 @@ impl<'a> ChatTurn<'a> {
         let ttft = turn_start_time.elapsed().as_secs_f64();
         self.sampler.accept(id_last);
 
-        mtp.begin(prompt_tokens)
+        mtp.begin(prompt_tokens, 0)
             .map_err(|err| format!("Failed to start speculative decoding: {err:#?}"))?;
         println!("mtp loaded");
 
@@ -799,7 +800,7 @@ impl<'a> ChatTurn<'a> {
                 &self.model,
             )?;
 
-            let draft_tokens = mtp.draft(session.n_past, id_last, &[])?;
+            let draft_tokens = mtp.draft(session.n_past, id_last, &[], 0)?;
 
             session.batch.clear();
 
@@ -850,7 +851,7 @@ impl<'a> ChatTurn<'a> {
             }
 
             if !draft_tokens.is_empty() {
-                mtp.accept(n_accepted)?;
+                mtp.accept(n_accepted, 0)?;
                 let tokens_to_keep_until = session.n_past + 1 + n_accepted as i32;
                 if (n_accepted as usize) < draft_tokens.len() {
                     mtp.target_context_mut().kv_cache_seq_rm(
