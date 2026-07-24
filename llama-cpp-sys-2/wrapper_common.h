@@ -55,14 +55,15 @@ void llama_rs_memory_breakdown_print(const struct llama_context *ctx);
 struct llama_rs_mtp_speculative *
 llama_rs_mtp_speculative_init(struct llama_context *ctx_tgt,
                               struct llama_context *ctx_dft, int32_t n_max,
-                              int32_t n_min, float p_min);
+                              int32_t n_min, float p_min, uint32_t n_seq);
 
 void llama_rs_mtp_speculative_free(struct llama_rs_mtp_speculative *spec);
 
 llama_rs_status
 llama_rs_mtp_speculative_begin(struct llama_rs_mtp_speculative *spec,
                                const llama_token *prompt_tokens,
-                               size_t prompt_tokens_count);
+                               size_t prompt_tokens_count,
+                               int32_t seq_id);
 
 llama_rs_status
 llama_rs_mtp_speculative_process(struct llama_rs_mtp_speculative *spec,
@@ -72,11 +73,12 @@ llama_rs_status llama_rs_mtp_speculative_draft(
     struct llama_rs_mtp_speculative *spec, llama_pos n_past,
     llama_token id_last, const llama_token *prompt_tokens,
     size_t prompt_tokens_count, llama_token *out_tokens,
-    size_t out_tokens_capacity, size_t *out_tokens_count);
+    size_t out_tokens_capacity, size_t *out_tokens_count,
+    int32_t seq_id);
 
 llama_rs_status
 llama_rs_mtp_speculative_accept(struct llama_rs_mtp_speculative *spec,
-                                uint16_t n_accepted);
+                                uint16_t n_accepted, int32_t seq_id);
 
 void llama_rs_string_free(char *ptr);
 

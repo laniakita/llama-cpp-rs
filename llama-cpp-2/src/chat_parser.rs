@@ -73,9 +73,6 @@ impl ChatParser {
         chat_params: &LlamaChatParams,
         generation_params: &LlamaGenerationParams,
     ) -> Result<Self, ChatParserInitError> {
-        // Under the hood, LlamaChatParams is now just a safe wrapper around
-        // *mut llama_rs_common_chat_params. We pass its pointer down to the C++
-        // engine initialization!
         let mut gen_params_state = generation_params.as_ptr()?;
         let ptr = unsafe { llama_rs_chat_parser_init(chat_params.ptr, gen_params_state.get()) };
         if ptr.is_null() {
@@ -231,7 +228,10 @@ impl ChatDiff {
             content,
             reasoning,
             tool_call_index,
-            tool_call: if tool_call_name.is_some() || tool_call_arguments.is_some() || tool_call_id.is_some() {
+            tool_call: if tool_call_name.is_some()
+                || tool_call_arguments.is_some()
+                || tool_call_id.is_some()
+            {
                 match LlamaChatToolCall::new(
                     tool_call_name.unwrap_or_default(),
                     tool_call_arguments.unwrap_or_default(),
