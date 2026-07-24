@@ -16,6 +16,8 @@ pub struct MtpSpeculativeParams {
     pub n_min: i32,
     /// Minimum draft probability accepted by llama.cpp's MTP drafter.
     pub p_min: f32,
+    /// Maximum number of concurrent sequences the MTP context can track.
+    pub n_seq: u32,
 }
 
 impl Default for MtpSpeculativeParams {
@@ -24,6 +26,7 @@ impl Default for MtpSpeculativeParams {
             n_max: 3,
             n_min: 0,
             p_min: 0.0,
+            n_seq: 1,
         }
     }
 }
@@ -46,9 +49,6 @@ pub enum MtpSpeculativeError {
 }
 
 /// RAII owner for a same-model MTP speculative context.
-///
-/// This wrapper currently binds llama.cpp's speculative state to sequence 0.
-/// Batches passed to [`Self::process`] must therefore contain only sequence 0.
 #[derive(Debug)]
 pub struct MtpSpeculative<'model> {
     raw: NonNull<llama_cpp_sys_2::llama_rs_mtp_speculative>,
@@ -83,6 +83,7 @@ impl<'model> MtpSpeculative<'model> {
                 params.n_max,
                 params.n_min,
                 params.p_min,
+                params.n_seq,
             )
         };
         let raw = NonNull::new(raw).ok_or(MtpSpeculativeError::InitFailed)?;
@@ -116,13 +117,14 @@ impl<'model> MtpSpeculative<'model> {
     /// # Errors
     ///
     /// Returns an error if llama.cpp rejects the call.
-    pub fn begin(&mut self, prompt_tokens: &[LlamaToken]) -> Result<(), MtpSpeculativeError> {
+    pub fn begin(&mut self, prompt_tokens: &[LlamaToken], seq_id: i32) -> Result<(), MtpSpeculativeError> {
         let prompt = tokens_to_raw(prompt_tokens);
         let status = unsafe {
             llama_cpp_sys_2::llama_rs_mtp_speculative_begin(
                 self.raw.as_ptr(),
                 prompt.as_ptr(),
                 prompt.len(),
+                seq_id,
             )
         };
         status_to_result(status)
@@ -130,7 +132,7 @@ impl<'model> MtpSpeculative<'model> {
 
     /// Process a batch that was just decoded by the target context.
     ///
-    /// The batch must contain token input for sequence 0 only.
+    /// Process a batch that was just decoded by the target context.
     ///
     /// # Errors
     ///
@@ -156,6 +158,7 @@ impl<'model> MtpSpeculative<'model> {
         n_past: i32,
         id_last: LlamaToken,
         prompt_tokens: &[LlamaToken],
+        seq_id: i32,
     ) -> Result<Vec<LlamaToken>, MtpSpeculativeError> {
         if n_past < 0 {
             return Err(MtpSpeculativeError::InvalidParams);
@@ -174,6 +177,7 @@ impl<'model> MtpSpeculative<'model> {
                 raw_out.as_mut_ptr(),
                 raw_out.len(),
                 &raw mut out_len,
+                seq_id,
             )
         };
         if status == llama_cpp_sys_2::LLAMA_RS_STATUS_ALLOCATION_FAILED {
@@ -189,9 +193,9 @@ impl<'model> MtpSpeculative<'model> {
     /// # Errors
     ///
     /// Returns an error if llama.cpp rejects the call.
-    pub fn accept(&mut self, n_accepted: u16) -> Result<(), MtpSpeculativeError> {
+    pub fn accept(&mut self, n_accepted: u16, seq_id: i32) -> Result<(), MtpSpeculativeError> {
         let status = unsafe {
-            llama_cpp_sys_2::llama_rs_mtp_speculative_accept(self.raw.as_ptr(), n_accepted)
+            llama_cpp_sys_2::llama_rs_mtp_speculative_accept(self.raw.as_ptr(), n_accepted, seq_id)
         };
         status_to_result(status)
     }

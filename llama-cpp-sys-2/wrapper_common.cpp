@@ -138,16 +138,13 @@ struct llama_rs_mtp_speculative {
   bool draft_pending = false;
 };
 
-static constexpr llama_seq_id LLAMA_RS_MTP_SEQ_ID = 0;
-
 static bool llama_rs_mtp_batch_compatible(const struct llama_batch &batch) {
   if (batch.n_tokens <= 0 || !batch.token || batch.embd || !batch.pos ||
       !batch.n_seq_id || !batch.seq_id) {
     return false;
   }
   for (int32_t k = 0; k < batch.n_tokens; ++k) {
-    if (batch.n_seq_id[k] != 1 || !batch.seq_id[k] ||
-        batch.seq_id[k][0] != LLAMA_RS_MTP_SEQ_ID) {
+    if (batch.n_seq_id[k] != 1 || !batch.seq_id[k]) {
       return false;
     }
   }
@@ -166,7 +163,7 @@ static void llama_rs_assign_tokens(std::vector<llama_token> &dst,
 extern "C" struct llama_rs_mtp_speculative *
 llama_rs_mtp_speculative_init(struct llama_context *ctx_tgt,
                               struct llama_context *ctx_dft, int32_t n_max,
-                              int32_t n_min, float p_min) {
+                              int32_t n_min, float p_min, uint32_t n_seq) {
   if (!ctx_tgt || !ctx_dft || n_max <= 0 || n_min < 0 || n_min > n_max) {
     return nullptr;
   }
@@ -180,7 +177,7 @@ llama_rs_mtp_speculative_init(struct llama_context *ctx_tgt,
     wrapper->params.draft.n_min = n_min;
     wrapper->params.draft.p_min = p_min;
 
-    wrapper->spec = common_speculative_init(wrapper->params, 1);
+    wrapper->spec = common_speculative_init(wrapper->params, n_seq);
     if (!wrapper->spec) {
       return nullptr;
     }
@@ -206,7 +203,8 @@ llama_rs_mtp_speculative_free(struct llama_rs_mtp_speculative *spec) {
 extern "C" llama_rs_status
 llama_rs_mtp_speculative_begin(struct llama_rs_mtp_speculative *spec,
                                const llama_token *prompt_tokens,
-                               size_t prompt_tokens_count) {
+                               size_t prompt_tokens_count,
+                               int32_t seq_id) {
   if (!spec || !spec->spec || (!prompt_tokens && prompt_tokens_count > 0)) {
     return LLAMA_RS_STATUS_INVALID_ARGUMENT;
   }
@@ -215,7 +213,7 @@ llama_rs_mtp_speculative_begin(struct llama_rs_mtp_speculative *spec,
     llama_rs_assign_tokens(spec->prompt, prompt_tokens, prompt_tokens_count);
     spec->last_draft_len = 0;
     spec->draft_pending = false;
-    common_speculative_begin(spec->spec, LLAMA_RS_MTP_SEQ_ID, spec->prompt);
+    common_speculative_begin(spec->spec, seq_id, spec->prompt);
     return LLAMA_RS_STATUS_OK;
   } catch (...) {
     return LLAMA_RS_STATUS_EXCEPTION;
@@ -245,7 +243,8 @@ extern "C" llama_rs_status llama_rs_mtp_speculative_draft(
     struct llama_rs_mtp_speculative *spec, llama_pos n_past,
     llama_token id_last, const llama_token *prompt_tokens,
     size_t prompt_tokens_count, llama_token *out_tokens,
-    size_t out_tokens_capacity, size_t *out_tokens_count) {
+    size_t out_tokens_capacity, size_t *out_tokens_count,
+    int32_t seq_id) {
   if (!spec || !spec->spec || (!prompt_tokens && prompt_tokens_count > 0) ||
       !out_tokens_count || n_past < 0) {
     return LLAMA_RS_STATUS_INVALID_ARGUMENT;
@@ -260,7 +259,7 @@ extern "C" llama_rs_status llama_rs_mtp_speculative_draft(
     spec->last_draft_len = 0;
 
     auto &params =
-        common_speculative_get_draft_params(spec->spec, LLAMA_RS_MTP_SEQ_ID);
+        common_speculative_get_draft_params(spec->spec, seq_id);
     params = {
         true,         spec->params.draft.n_max, n_past, id_last, &spec->prompt,
         &spec->draft,
@@ -289,7 +288,7 @@ extern "C" llama_rs_status llama_rs_mtp_speculative_draft(
 
 extern "C" llama_rs_status
 llama_rs_mtp_speculative_accept(struct llama_rs_mtp_speculative *spec,
-                                uint16_t n_accepted) {
+                                uint16_t n_accepted, int32_t seq_id) {
   if (!spec || !spec->spec) {
     return LLAMA_RS_STATUS_INVALID_ARGUMENT;
   }
@@ -298,7 +297,7 @@ llama_rs_mtp_speculative_accept(struct llama_rs_mtp_speculative *spec,
   }
 
   try {
-    common_speculative_accept(spec->spec, LLAMA_RS_MTP_SEQ_ID, n_accepted);
+    common_speculative_accept(spec->spec, seq_id, n_accepted);
     spec->last_draft_len = 0;
     spec->draft_pending = false;
     return LLAMA_RS_STATUS_OK;
