@@ -800,7 +800,9 @@ impl<'a> ChatTurn<'a> {
                 &self.model,
             )?;
 
-            let draft_tokens = mtp.draft(session.n_past, id_last, &[], 0)?;
+            mtp.prepare_draft(0, session.n_past, id_last, &[])?;
+            mtp.execute_drafts()?;
+            let draft_tokens = mtp.get_draft(0)?;
 
             session.batch.clear();
 

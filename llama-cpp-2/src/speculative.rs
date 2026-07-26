@@ -46,6 +46,12 @@ pub enum MtpSpeculativeError {
     /// The draft output exceeded the caller-provided bound.
     #[error("llama.cpp MTP draft exceeded configured maximum")]
     DraftOverflow,
+    /// The drafted sequence was not found or has not been prepared.
+    #[error("llama.cpp MTP sequence not found")]
+    SequenceNotFound,
+    /// Drafting execution failed.
+    #[error("llama.cpp MTP draft execution failed")]
+    DraftExecutionFailed,
 }
 
 /// RAII owner for a same-model MTP speculative context.
@@ -147,37 +153,63 @@ impl<'model> MtpSpeculative<'model> {
         status_to_result(status)
     }
 
-    /// Generate draft tokens after `id_last`.
+    /// Prepare draft tokens after `id_last` for a sequence.
     ///
     /// # Errors
     ///
-    /// Returns an error if llama.cpp rejects the draft operation or emits more
-    /// draft tokens than requested.
-    pub fn draft(
+    /// Returns an error if llama.cpp rejects the draft operation.
+    pub fn prepare_draft(
         &mut self,
+        seq_id: i32,
         n_past: i32,
         id_last: LlamaToken,
         prompt_tokens: &[LlamaToken],
-        seq_id: i32,
-    ) -> Result<Vec<LlamaToken>, MtpSpeculativeError> {
+    ) -> Result<(), MtpSpeculativeError> {
         if n_past < 0 {
             return Err(MtpSpeculativeError::InvalidParams);
         }
 
         let prompt = tokens_to_raw(prompt_tokens);
-        let mut raw_out = vec![0; self.n_max];
-        let mut out_len = 0_usize;
         let status = unsafe {
-            llama_cpp_sys_2::llama_rs_mtp_speculative_draft(
+            llama_cpp_sys_2::llama_rs_mtp_speculative_prepare_draft(
                 self.raw.as_ptr(),
                 n_past,
                 id_last.0,
                 prompt.as_ptr(),
                 prompt.len(),
+                seq_id,
+            )
+        };
+        status_to_result(status)
+    }
+
+    /// Execute drafts for all prepared sequences.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if llama.cpp fails to execute drafts.
+    pub fn execute_drafts(&mut self) -> Result<(), MtpSpeculativeError> {
+        let status = unsafe {
+            llama_cpp_sys_2::llama_rs_mtp_speculative_execute_drafts(self.raw.as_ptr())
+        };
+        status_to_result(status)
+    }
+
+    /// Retrieve the generated draft tokens for a specific sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sequence draft overflows the maximum allocation.
+    pub fn get_draft(&self, seq_id: i32) -> Result<Vec<LlamaToken>, MtpSpeculativeError> {
+        let mut raw_out = vec![0; self.n_max];
+        let mut out_len = 0_usize;
+        let status = unsafe {
+            llama_cpp_sys_2::llama_rs_mtp_speculative_get_draft(
+                self.raw.as_ptr(),
+                seq_id,
                 raw_out.as_mut_ptr(),
                 raw_out.len(),
                 &raw mut out_len,
-                seq_id,
             )
         };
         if status == llama_cpp_sys_2::LLAMA_RS_STATUS_ALLOCATION_FAILED {

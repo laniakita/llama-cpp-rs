@@ -9,6 +9,8 @@ use std::marker::PhantomData;
 pub struct LlamaBatch<'a> {
     /// The number of tokens the batch was allocated with. they are safe to write to - but not necessarily read from as they are not necessarily initialized
     allocated: usize,
+    /// The maximum number of sequences that can be added to the batch.
+    n_seq_max: i32,
     /// The logits that are initialized. Used by [`LlamaContext`] to ensure that only initialized logits are accessed.
     pub(crate) initialized_logits: Vec<i32>,
     #[allow(clippy::doc_markdown)]
@@ -97,6 +99,70 @@ impl<'a> LlamaBatch<'a> {
         Ok(())
     }
 
+    /// Add an embedding to the batch for sequences `seq_ids` at position `pos`.
+    ///
+    /// > **WARNING**: Do NOT mix `add` (which writes to `batch.token`) and `add_embedding` (which writes to `batch.embd`)
+    /// > for the same index in the batch. You should only use this method if you initialized the batch using `with_embeddings`.
+    ///
+    /// # Panics
+    ///
+    /// - [`self.llama_batch.n_tokens`] does not fit into a usize
+    /// - [`seq_ids.len()`] does not fit into a [`llama_seq_id`]
+    ///
+    /// # Errors
+    ///
+    /// returns a error if there is insufficient space in the buffer
+    pub fn add_embedding(
+        &mut self,
+        embedding: &[f32],
+        pos: llama_pos,
+        seq_ids: &[i32],
+        logits: bool,
+    ) -> Result<(), BatchAddError> {
+        if self.allocated
+            < usize::try_from(self.n_tokens() + 1).expect("cannot fit n_tokens into a usize")
+        {
+            return Err(BatchAddError::InsufficientSpace(self.allocated));
+        }
+        let offset = self.llama_batch.n_tokens;
+        let offset_usize = usize::try_from(offset).expect("cannot fit n_tokens into a usize");
+        unsafe {
+            if self.llama_batch.embd.is_null() {
+                // If embd wasn't allocated, this is fundamentally unsafe.
+                // It means the user forgot to call with_embeddings.
+                return Err(BatchAddError::InsufficientSpace(self.allocated));
+            }
+            std::ptr::copy_nonoverlapping(
+                embedding.as_ptr(),
+                self.llama_batch.embd.add(offset_usize * embedding.len()),
+                embedding.len(),
+            );
+            self.llama_batch.pos.add(offset_usize).write(pos);
+            self.llama_batch.n_seq_id.add(offset_usize).write(
+                llama_seq_id::try_from(seq_ids.len())
+                    .expect("cannot fit seq_ids.len() into a llama_seq_id"),
+            );
+            for (i, seq_id) in seq_ids.iter().enumerate() {
+                let tmp = *self.llama_batch.seq_id.add(offset_usize);
+                tmp.add(i).write(*seq_id);
+            }
+            self.llama_batch
+                .logits
+                .add(offset_usize)
+                .write(i8::from(logits));
+        }
+
+        if logits {
+            self.initialized_logits.push(offset);
+        } else {
+            self.initialized_logits.retain(|l| l != &offset);
+        }
+
+        self.llama_batch.n_tokens += 1;
+
+        Ok(())
+    }
+
     /// Add a sequence of tokens to the batch for the given sequence id. If `logits_all` is true, the
     /// tokens will be initialized and can be read from after the next decode.
     ///
@@ -150,10 +216,29 @@ impl<'a> LlamaBatch<'a> {
 
         LlamaBatch {
             allocated: n_tokens,
+            n_seq_max,
             initialized_logits: vec![],
             llama_batch: batch,
             phantom: PhantomData,
         }
+    }
+
+    /// Re-initialize the batch to include space for embeddings.
+    ///
+    /// # Arguments
+    ///
+    /// - `embd_size`: the size of the embedding vector for each token
+    #[must_use]
+    pub fn with_embeddings(mut self, embd_size: usize) -> Self {
+        let n_tokens_i32 = i32::try_from(self.allocated).expect("cannot fit n_tokens into a i32");
+        let embd_size_i32 = i32::try_from(embd_size).expect("cannot fit embd_size into a i32");
+        unsafe {
+            if self.allocated > 0 {
+                llama_batch_free(self.llama_batch);
+            }
+            self.llama_batch = llama_batch_init(n_tokens_i32, embd_size_i32, self.n_seq_max);
+        }
+        self
     }
 
     /// ``llama_batch_get_one``
@@ -182,6 +267,7 @@ impl<'a> LlamaBatch<'a> {
         };
         let batch = Self {
             allocated: 0,
+            n_seq_max: 1,
             initialized_logits: vec![(tokens.len() - 1)
                 .try_into()
                 .expect("number of tokens exceeds i32::MAX + 1")],

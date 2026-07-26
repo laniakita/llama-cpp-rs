@@ -128,13 +128,18 @@ llama_rs_memory_breakdown_print(const struct llama_context *ctx) {
   common_memory_breakdown_print(ctx);
 }
 
-struct llama_rs_mtp_speculative {
-  common_params_speculative params;
-  common_speculative *spec = nullptr;
+#include <unordered_map>
+
+struct sequence_draft_state {
   std::vector<llama_token> prompt;
   std::vector<llama_token> draft;
   size_t last_draft_len = 0;
-  bool draft_pending = false;
+};
+
+struct llama_rs_mtp_speculative {
+  common_params_speculative params;
+  common_speculative *spec = nullptr;
+  std::unordered_map<int32_t, sequence_draft_state> seq_states;
 };
 
 static bool llama_rs_mtp_batch_compatible(const struct llama_batch &batch) {
@@ -202,17 +207,16 @@ llama_rs_mtp_speculative_free(struct llama_rs_mtp_speculative *spec) {
 extern "C" llama_rs_status
 llama_rs_mtp_speculative_begin(struct llama_rs_mtp_speculative *spec,
                                const llama_token *prompt_tokens,
-                               size_t prompt_tokens_count,
-                               int32_t seq_id) {
+                               size_t prompt_tokens_count, int32_t seq_id) {
   if (!spec || !spec->spec || (!prompt_tokens && prompt_tokens_count > 0)) {
     return LLAMA_RS_STATUS_INVALID_ARGUMENT;
   }
 
   try {
-    llama_rs_assign_tokens(spec->prompt, prompt_tokens, prompt_tokens_count);
-    spec->last_draft_len = 0;
-    spec->draft_pending = false;
-    common_speculative_begin(spec->spec, seq_id, spec->prompt);
+    auto &state = spec->seq_states[seq_id];
+    llama_rs_assign_tokens(state.prompt, prompt_tokens, prompt_tokens_count);
+    state.last_draft_len = 0;
+    common_speculative_begin(spec->spec, seq_id, state.prompt);
     return LLAMA_RS_STATUS_OK;
   } catch (...) {
     return LLAMA_RS_STATUS_EXCEPTION;
@@ -238,47 +242,74 @@ llama_rs_mtp_speculative_process(struct llama_rs_mtp_speculative *spec,
   }
 }
 
-extern "C" llama_rs_status llama_rs_mtp_speculative_draft(
+extern "C" llama_rs_status llama_rs_mtp_speculative_prepare_draft(
     struct llama_rs_mtp_speculative *spec, llama_pos n_past,
     llama_token id_last, const llama_token *prompt_tokens,
-    size_t prompt_tokens_count, llama_token *out_tokens,
-    size_t out_tokens_capacity, size_t *out_tokens_count,
-    int32_t seq_id) {
+    size_t prompt_tokens_count, int32_t seq_id) {
   if (!spec || !spec->spec || (!prompt_tokens && prompt_tokens_count > 0) ||
-      !out_tokens_count || n_past < 0) {
+      n_past < 0) {
     return LLAMA_RS_STATUS_INVALID_ARGUMENT;
   }
 
   try {
-    if (spec->draft_pending) {
-      return LLAMA_RS_STATUS_INVALID_ARGUMENT;
-    }
-    llama_rs_assign_tokens(spec->prompt, prompt_tokens, prompt_tokens_count);
-    spec->draft.clear();
-    spec->last_draft_len = 0;
+    auto &state = spec->seq_states[seq_id];
+    llama_rs_assign_tokens(state.prompt, prompt_tokens, prompt_tokens_count);
+    state.draft.clear();
+    state.last_draft_len = 0;
 
-    auto &params =
-        common_speculative_get_draft_params(spec->spec, seq_id);
+    auto &params = common_speculative_get_draft_params(spec->spec, seq_id);
     params = {
-        true,         spec->params.draft.n_max, n_past, id_last, &spec->prompt,
-        &spec->draft,
+        true,         spec->params.draft.n_max, n_past, id_last, &state.prompt,
+        &state.draft,
     };
+    return LLAMA_RS_STATUS_OK;
+  } catch (...) {
+    return LLAMA_RS_STATUS_EXCEPTION;
+  }
+}
 
+extern "C" llama_rs_status
+llama_rs_mtp_speculative_execute_drafts(struct llama_rs_mtp_speculative *spec) {
+  if (!spec || !spec->spec) {
+    return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+  }
+  try {
     common_speculative_draft(spec->spec);
+    return LLAMA_RS_STATUS_OK;
+  } catch (...) {
+    return LLAMA_RS_STATUS_EXCEPTION;
+  }
+}
 
-    *out_tokens_count = spec->draft.size();
-    if (spec->draft.size() > out_tokens_capacity) {
+extern "C" llama_rs_status
+llama_rs_mtp_speculative_get_draft(struct llama_rs_mtp_speculative *spec,
+                                   int32_t seq_id, llama_token *out_tokens,
+                                   size_t out_tokens_capacity,
+                                   size_t *out_tokens_count) {
+  if (!spec || !spec->spec || !out_tokens_count) {
+    return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+  }
+
+  try {
+    auto it = spec->seq_states.find(seq_id);
+    if (it == spec->seq_states.end()) {
+      *out_tokens_count = 0;
+      return LLAMA_RS_STATUS_OK;
+    }
+
+    auto &state = it->second;
+    *out_tokens_count = state.draft.size();
+    if (state.draft.size() > out_tokens_capacity) {
       return LLAMA_RS_STATUS_ALLOCATION_FAILED;
     }
-    if (!spec->draft.empty() && !out_tokens) {
+    if (!state.draft.empty() && !out_tokens) {
       return LLAMA_RS_STATUS_INVALID_ARGUMENT;
     }
-    if (!spec->draft.empty()) {
-      std::memcpy(out_tokens, spec->draft.data(),
-                  spec->draft.size() * sizeof(llama_token));
+    if (!state.draft.empty()) {
+      std::memcpy(out_tokens, state.draft.data(),
+                  state.draft.size() * sizeof(llama_token));
     }
-    spec->last_draft_len = spec->draft.size();
-    spec->draft_pending = !spec->draft.empty();
+    state.last_draft_len = state.draft.size();
     return LLAMA_RS_STATUS_OK;
   } catch (...) {
     return LLAMA_RS_STATUS_EXCEPTION;
@@ -291,14 +322,16 @@ llama_rs_mtp_speculative_accept(struct llama_rs_mtp_speculative *spec,
   if (!spec || !spec->spec) {
     return LLAMA_RS_STATUS_INVALID_ARGUMENT;
   }
-  if (!spec->draft_pending || n_accepted > spec->last_draft_len) {
-    return LLAMA_RS_STATUS_INVALID_ARGUMENT;
-  }
 
   try {
+    auto it = spec->seq_states.find(seq_id);
+    if (it == spec->seq_states.end() ||
+        n_accepted > it->second.last_draft_len) {
+      return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+    }
+
     common_speculative_accept(spec->spec, seq_id, n_accepted);
-    spec->last_draft_len = 0;
-    spec->draft_pending = false;
+    it->second.last_draft_len = 0;
     return LLAMA_RS_STATUS_OK;
   } catch (...) {
     return LLAMA_RS_STATUS_EXCEPTION;

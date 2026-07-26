@@ -20,6 +20,23 @@ pub enum KvCacheConversionError {
     /// Partial sequence couldn't be removed
     #[error("Couldn't remove partial sequence")]
     PartialSequenceRemovalFailed(i32, i32),
+    /// The specified sequence was not found when attempting to checkpoint.
+    #[error("Sequence not found or has no state")]
+    SequenceNotFound,
+}
+
+/// An opaque wrapper around a serialized sequence state from the KV cache.
+#[derive(Debug, Clone)]
+pub struct SeqDataExt {
+    pub(crate) data: Vec<u8>,
+}
+
+impl SeqDataExt {
+    /// Returns the raw binary data of the sequence state.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
 }
 
 impl LlamaContext<'_> {
@@ -281,4 +298,61 @@ impl LlamaContext<'_> {
         let mem = unsafe { llama_cpp_sys_2::llama_get_memory(self.context.as_ptr()) };
         unsafe { llama_cpp_sys_2::llama_memory_seq_pos_max(mem, seq_id) }
     }
+
+    /// Checkpoint a sequence's KV cache state.
+    ///
+    /// # Parameters
+    /// * `seq_id` - The sequence id to checkpoint
+    /// * `flags` - Flags to pass to `llama_state_seq_get_size_ext` and `llama_state_seq_get_data_ext` (default: 0)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sequence does not exist or has zero size.
+    pub fn get_seq_state_ext(
+        &self,
+        seq_id: i32,
+        flags: u32,
+    ) -> Result<SeqDataExt, KvCacheConversionError> {
+        let size = unsafe {
+            llama_cpp_sys_2::llama_state_seq_get_size_ext(
+                self.context.as_ptr(),
+                seq_id,
+                flags,
+            )
+        };
+        if size == 0 {
+            return Err(KvCacheConversionError::SequenceNotFound);
+        }
+
+        let mut data = vec![0u8; size];
+        unsafe {
+            llama_cpp_sys_2::llama_state_seq_get_data_ext(
+                self.context.as_ptr(),
+                data.as_mut_ptr(),
+                size,
+                seq_id,
+                flags,
+            );
+        }
+        Ok(SeqDataExt { data })
+    }
+
+    /// Restore a sequence's KV cache state from a checkpoint.
+    ///
+    /// # Parameters
+    /// * `seq_id` - The sequence id to restore
+    /// * `data` - The checkpoint data to restore
+    /// * `flags` - Flags to pass to `llama_state_seq_set_data_ext` (default: 0)
+    pub fn set_seq_state_ext(&mut self, seq_id: i32, data: &SeqDataExt, flags: u32) {
+        unsafe {
+            llama_cpp_sys_2::llama_state_seq_set_data_ext(
+                self.context.as_ptr(),
+                data.data.as_ptr(),
+                data.data.len(),
+                seq_id,
+                flags,
+            );
+        }
+    }
 }
+
