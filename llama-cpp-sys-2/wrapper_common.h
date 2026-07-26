@@ -69,12 +69,18 @@ llama_rs_status
 llama_rs_mtp_speculative_process(struct llama_rs_mtp_speculative *spec,
                                  const struct llama_batch *batch);
 
-llama_rs_status llama_rs_mtp_speculative_draft(
+llama_rs_status llama_rs_mtp_speculative_prepare_draft(
     struct llama_rs_mtp_speculative *spec, llama_pos n_past,
     llama_token id_last, const llama_token *prompt_tokens,
-    size_t prompt_tokens_count, llama_token *out_tokens,
-    size_t out_tokens_capacity, size_t *out_tokens_count,
-    int32_t seq_id);
+    size_t prompt_tokens_count, int32_t seq_id);
+
+llama_rs_status llama_rs_mtp_speculative_execute_drafts(
+    struct llama_rs_mtp_speculative *spec);
+
+llama_rs_status llama_rs_mtp_speculative_get_draft(
+    struct llama_rs_mtp_speculative *spec, int32_t seq_id,
+    llama_token *out_tokens, size_t out_tokens_capacity,
+    size_t *out_tokens_count);
 
 llama_rs_status
 llama_rs_mtp_speculative_accept(struct llama_rs_mtp_speculative *spec,
