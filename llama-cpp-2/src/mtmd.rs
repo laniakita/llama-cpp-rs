@@ -5,7 +5,7 @@
 //!
 //! # Warning
 //! This API is experimental and subject to breaking changes.
-use std::ffi::{CStr, CString};
+use std::ffi::{c_void, CStr, CString};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::slice;
@@ -59,34 +59,138 @@ impl From<llama_cpp_sys_2::mtmd_input_chunk_type> for MtmdInputChunkType {
 /// use llama_cpp_2::mtmd::{MtmdContextParams, mtmd_default_marker};
 /// use std::ffi::CString;
 ///
-/// let params = MtmdContextParams {
-///     use_gpu: false,
-///     print_timings: true,
-///     n_threads: 4,
-///     media_marker: CString::new(mtmd_default_marker()).unwrap(),
-///     image_min_tokens: -1,
-///     image_max_tokens: -1,
-/// };
+/// let params = MtmdContextParams::default()
+///     .with_use_gpu(false)
+///     .with_print_timings(true)
+///     .with_n_threads(4)
+///     .with_media_marker(CString::new(mtmd_default_marker()).unwrap())
+///     .with_image_min_tokens(-1)
+///     .with_image_max_tokens(-1);
 /// ```
-#[derive(Debug, Clone)]
 pub struct MtmdContextParams {
+    pub(crate) params: llama_cpp_sys_2::mtmd_context_params,
+    media_marker: CString,
+    /// Callback function for tracking load progress.
+    progress_callback: Option<Box<dyn FnMut(f32) -> bool>>,
+}
+
+impl std::fmt::Debug for MtmdContextParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MtmdContextParams")
+            .field("use_gpu", &self.params.use_gpu)
+            .field("print_timings", &self.params.print_timings)
+            .field("n_threads", &self.params.n_threads)
+            .field("media_marker", &self.media_marker)
+            .field("image_min_tokens", &self.params.image_min_tokens)
+            .field("image_max_tokens", &self.params.image_max_tokens)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MtmdContextParams {
     /// Whether to use GPU acceleration
-    pub use_gpu: bool,
+    #[must_use]
+    pub fn use_gpu(&self) -> bool {
+        self.params.use_gpu
+    }
+
+    /// Sets whether to use GPU acceleration
+    #[must_use]
+    pub fn with_use_gpu(mut self, use_gpu: bool) -> Self {
+        self.params.use_gpu = use_gpu;
+        self
+    }
+
     /// Whether to print timing information
-    pub print_timings: bool,
+    #[must_use]
+    pub fn print_timings(&self) -> bool {
+        self.params.print_timings
+    }
+
+    /// Sets whether to print timing information
+    #[must_use]
+    pub fn with_print_timings(mut self, print_timings: bool) -> Self {
+        self.params.print_timings = print_timings;
+        self
+    }
+
     /// Number of threads to use for processing
-    pub n_threads: i32,
+    #[must_use]
+    pub fn n_threads(&self) -> i32 {
+        self.params.n_threads
+    }
+
+    /// Sets number of threads to use for processing
+    #[must_use]
+    pub fn with_n_threads(mut self, n_threads: i32) -> Self {
+        self.params.n_threads = n_threads;
+        self
+    }
+
     /// Media marker string used to identify media positions in text
-    pub media_marker: CString,
+    #[must_use]
+    pub fn media_marker(&self) -> &std::ffi::CStr {
+        &self.media_marker
+    }
+
+    /// Sets media marker string used to identify media positions in text
+    #[must_use]
+    pub fn with_media_marker(mut self, media_marker: CString) -> Self {
+        self.media_marker = media_marker;
+        self.params.media_marker = self.media_marker.as_ptr();
+        self
+    }
+
     /// Minimum number of tokens used to represent an image.
+
+    #[must_use]
+    pub fn image_min_tokens(&self) -> i32 {
+        self.params.image_min_tokens
+    }
+
     /// Controls the visual token budget lower bound. Use -1 for the model default.
     /// Gemma 4 supported budgets: 70, 140, 280, 560, 1120.
-    pub image_min_tokens: i32,
+    #[must_use]
+    pub fn with_image_min_tokens(mut self, image_min_tokens: i32) -> Self {
+        self.params.image_min_tokens = image_min_tokens;
+        self
+    }
+
     /// Maximum number of tokens used to represent an image.
+
+    #[must_use]
+    pub fn image_max_tokens(&self) -> i32 {
+        self.params.image_max_tokens
+    }
+
     /// Controls the visual token budget upper bound. Use -1 for the model default.
     /// Lower values reduce memory and compute at the cost of visual detail.
     /// Gemma 4 supported budgets: 70, 140, 280, 560, 1120.
-    pub image_max_tokens: i32,
+    #[must_use]
+    pub fn with_image_max_tokens(mut self, image_max_tokens: i32) -> Self {
+        self.params.image_max_tokens = image_max_tokens;
+        self
+    }
+
+    /// Sets a callback invoked during loading with progress in `0.0..=1.0`.
+    /// Returning `false` aborts the load (it then fails with `NullResult`).
+    #[must_use]
+    pub fn with_progress_callback<F: FnMut(f32) -> bool + 'static>(mut self, callback: F) -> Self {
+        unsafe extern "C" fn trampoline<F: FnMut(f32) -> bool>(
+            progress: f32,
+            user_data: *mut c_void,
+        ) -> bool {
+            let callback = unsafe { &mut *user_data.cast::<F>() };
+            callback(progress)
+        }
+
+        let mut callback = Box::new(callback);
+        self.params.progress_callback_user_data =
+            std::ptr::from_mut(&mut *callback).cast::<c_void>();
+        self.params.progress_callback = Some(trampoline::<F>);
+        self.progress_callback = Some(callback);
+        self
+    }
 }
 
 impl Default for MtmdContextParams {
@@ -97,36 +201,16 @@ impl Default for MtmdContextParams {
 
 impl From<&MtmdContextParams> for llama_cpp_sys_2::mtmd_context_params {
     fn from(params: &MtmdContextParams) -> Self {
-        let mut context = unsafe { llama_cpp_sys_2::mtmd_context_params_default() };
-        let MtmdContextParams {
-            use_gpu,
-            print_timings,
-            n_threads,
-            media_marker,
-            image_min_tokens,
-            image_max_tokens,
-        } = params;
-
-        context.use_gpu = *use_gpu;
-        context.print_timings = *print_timings;
-        context.n_threads = *n_threads;
-        context.media_marker = media_marker.as_ptr();
-        context.image_min_tokens = *image_min_tokens;
-        context.image_max_tokens = *image_max_tokens;
-
-        context
+        params.params
     }
 }
 
 impl From<llama_cpp_sys_2::mtmd_context_params> for MtmdContextParams {
     fn from(params: llama_cpp_sys_2::mtmd_context_params) -> Self {
         Self {
-            use_gpu: params.use_gpu,
-            print_timings: params.print_timings,
-            n_threads: params.n_threads,
             media_marker: unsafe { CStr::from_ptr(params.media_marker) }.to_owned(),
-            image_min_tokens: params.image_min_tokens,
-            image_max_tokens: params.image_max_tokens,
+            params,
+            progress_callback: None,
         }
     }
 }
