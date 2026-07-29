@@ -103,20 +103,19 @@ impl<'a> MtmdCliContext<'a> {
         model: &LlamaModel,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Initialize MTMD context
-        let mtmd_params = MtmdContextParams {
-            use_gpu: !params.no_gpu && !params.no_mmproj_offload,
-            print_timings: true,
-            n_threads: params.n_threads,
-            media_marker: CString::new(
+        let mtmd_params = MtmdContextParams::default()
+            .with_use_gpu(!params.no_gpu && !params.no_mmproj_offload)
+            .with_print_timings(true)
+            .with_n_threads(params.n_threads)
+            .with_media_marker(CString::new(
                 params
                     .media_marker
                     .as_ref()
                     .unwrap_or(&llama_cpp_2::mtmd::mtmd_default_marker().to_string())
                     .clone(),
-            )?,
-            image_min_tokens: params.image_min_tokens,
-            image_max_tokens: params.image_max_tokens,
-        };
+            )?)
+            .with_image_min_tokens(params.image_min_tokens)
+            .with_image_max_tokens(params.image_max_tokens);
 
         let mtmd_ctx = MtmdContext::init_from_file(&params.mmproj_path, model, &mtmd_params)?;
 
