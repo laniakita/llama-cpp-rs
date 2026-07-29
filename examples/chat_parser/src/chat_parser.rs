@@ -783,7 +783,7 @@ impl<'a> ChatTurn<'a> {
         let mut generated_tokens = Vec::new();
 
         for _ in 0..max_predict {
-            if self.should_stop(&generated_tokens) || id_last == self.model.token_eos() {
+            if self.should_stop(&generated_tokens) || self.model.is_eog_token(id_last) {
                 if let Ok(final_diffs) = self.parser.finish() {
                     Self::handle_diffs(&final_diffs, &mut response);
                 }
