@@ -4,7 +4,6 @@ mod tools;
 
 use std::borrow::Cow;
 use std::ffi::CString;
-use std::io::{self, Write};
 use std::num::NonZeroU32;
 use std::path::Path;
 
@@ -463,21 +462,24 @@ impl CommonSampler {
         if !params.generation_prompt.is_empty() {
             let generation_prompt = params.generation_prompt.to_string_lossy();
             let mut decoder = UTF_8.new_decoder();
-            if let Ok(tokens) =
-                model.str_to_token(&generation_prompt, llama_cpp_2::model::AddBos::Never)
-            {
-                for (i, &token) in tokens.iter().enumerate() {
-                    let piece = model.token_to_piece(token, &mut decoder, true, None)?;
-                    if i == 0 {
-                        // Check if the tokenizer inappropriately added a leading space to the first special token
-                        if piece.starts_with(" ") && !generation_prompt.starts_with(" ") {
-                            // Some tokenizers will add a space before the first special token,
-                            continue;
-                        }
+            let tokens = model.vocab().tokenize(generation_prompt.as_bytes(), false, true);
+            for (i, &token) in tokens.iter().enumerate() {
+                let piece_bytes = model.vocab().token_to_piece(token, true, None);
+                let mut piece = String::with_capacity(
+                    decoder
+                        .max_utf8_buffer_length(piece_bytes.len())
+                        .unwrap_or(piece_bytes.len()),
+                );
+                let _ = decoder.decode_to_string(&piece_bytes, &mut piece, false);
+                if i == 0 {
+                    // Check if the tokenizer inappropriately added a leading space to the first special token
+                    if piece.starts_with(' ') && !generation_prompt.starts_with(' ') {
+                        // Some tokenizers will add a space before the first special token,
+                        continue;
                     }
-                    //println!("eval_message: prefill token: {} = {}", token, piece);
-                    prefill_tokens.push(token);
                 }
+                //println!("eval_message: prefill token: {} = {}", token, piece);
+                prefill_tokens.push(token);
             }
         }
 
@@ -698,7 +700,7 @@ impl<'a> ChatTurn<'a> {
                 response.time_to_first_token = turn_start_time.elapsed().as_secs_f64();
             }
 
-            if self.should_stop(&generated_tokens) || token == self.model.token_eos() {
+            if self.should_stop(&generated_tokens) || self.model.vocab().is_eog(token) {
                 if let Ok(final_diffs) = self.parser.finish() {
                     Self::handle_diffs(&final_diffs, &mut response);
                 }
@@ -783,7 +785,7 @@ impl<'a> ChatTurn<'a> {
         let mut generated_tokens = Vec::new();
 
         for _ in 0..max_predict {
-            if self.should_stop(&generated_tokens) || self.model.is_eog_token(id_last) {
+            if self.should_stop(&generated_tokens) || self.model.vocab().is_eog(id_last) {
                 if let Ok(final_diffs) = self.parser.finish() {
                     Self::handle_diffs(&final_diffs, &mut response);
                 }
@@ -910,7 +912,12 @@ impl<'a> ChatTurn<'a> {
     ) -> Result<(), Box<dyn std::error::Error>> {
         res.tokens_generated += 1;
         generated_tokens.push(token);
-        let piece = model.token_to_piece(token, dcdr, true, None)?;
+        let piece_bytes = model.vocab().token_to_piece(token, true, None);
+        let mut piece = String::with_capacity(
+            dcdr.max_utf8_buffer_length(piece_bytes.len())
+                .unwrap_or(piece_bytes.len()),
+        );
+        let _ = dcdr.decode_to_string(&piece_bytes, &mut piece, false);
         if let Ok(diffs) = parser.feed(&piece) {
             Self::handle_diffs(&diffs, res);
         }
