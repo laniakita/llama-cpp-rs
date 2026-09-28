@@ -7,9 +7,11 @@ use std::{
 use llama_cpp_sys_2::{
     common_chat_msg_diffs, common_chat_msg_diffs_free, common_chat_msg_diffs_get_size,
     common_chat_msg_diffs_get_view, common_chat_params, common_chat_params_free,
+    common_chat_params_get_additional_stop, common_chat_params_get_additional_stops_count,
     common_chat_params_get_grammar_trigger, common_chat_params_get_grammar_triggers_count,
     common_chat_params_get_message_delimiter, common_chat_params_get_message_delimiters_count,
     common_chat_params_get_preserved_token, common_chat_params_get_preserved_tokens_count,
+    common_chat_params_get_thinking_end_tag, common_chat_params_get_thinking_end_tags_count,
     common_chat_params_get_view, common_chat_params_view, common_chat_templates_inputs,
     common_chat_templates_inputs_add_message, common_chat_templates_inputs_add_tool,
     common_chat_templates_inputs_add_tool_call_to_last_message,
@@ -390,6 +392,28 @@ impl LlamaChatParams {
             }
             delimiters
         };
+        let thinking_end_tags = unsafe {
+            let count = common_chat_params_get_thinking_end_tags_count(self.ptr);
+            let mut tags = Vec::with_capacity(count);
+            for i in 0..count {
+                let tag_ptr = common_chat_params_get_thinking_end_tag(self.ptr, i);
+                if !tag_ptr.is_null() {
+                    tags.push(CStr::from_ptr(tag_ptr).to_owned());
+                }
+            }
+            tags
+        };
+        let additional_stops = unsafe {
+            let count = common_chat_params_get_additional_stops_count(self.ptr);
+            let mut stops = Vec::with_capacity(count);
+            for i in 0..count {
+                let stop_ptr = common_chat_params_get_additional_stop(self.ptr, i);
+                if !stop_ptr.is_null() {
+                    stops.push(CStr::from_ptr(stop_ptr).to_owned());
+                }
+            }
+            stops
+        };
         LlamaChatParamsView {
             format: <llama_cpp_sys_2::llama_rs_common_chat_format>::from(self.view.format as u32)
                 .into(),
@@ -399,8 +423,9 @@ impl LlamaChatParams {
             generation_prompt: get_cstring(self.view.generation_prompt),
             supports_thinking: self.view.supports_thinking,
             thinking_start_tag: get_cstring(self.view.thinking_start_tag),
-            thinking_end_tag: get_cstring(self.view.thinking_end_tag),
+            thinking_end_tags,
             preserved_tokens,
+            additional_stops,
             parser: get_cstring(self.view.parser),
             grammar_triggers,
             message_delimiters,
@@ -428,8 +453,10 @@ pub enum LlamaChatFormat {
     PegNative = 2,
     /// These are intended to be parsed by the PEG parser
     PegGemma4 = 3,
+    /// These are intended to be parsed by the PEG parser
+    PegMinimaxM3 = 4,
     /// Not a format, just the # formats"]
-    Count = 4,
+    Count = 5,
 }
 
 impl From<llama_cpp_sys_2::llama_rs_common_chat_format> for LlamaChatFormat {
@@ -439,6 +466,7 @@ impl From<llama_cpp_sys_2::llama_rs_common_chat_format> for LlamaChatFormat {
             llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_FORMAT_PEG_SIMPLE => Self::PegSimple,
             llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_FORMAT_PEG_NATIVE => Self::PegNative,
             llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_FORMAT_PEG_GEMMA4 => Self::PegGemma4,
+            llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_FORMAT_PEG_MINIMAX_M3 => Self::PegMinimaxM3,
             llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_FORMAT_COUNT => Self::Count,
             _ => Self::default(),
         }
@@ -452,6 +480,7 @@ impl Into<llama_cpp_sys_2::llama_rs_common_chat_format> for LlamaChatFormat {
             Self::PegSimple => llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_FORMAT_PEG_SIMPLE,
             Self::PegNative => llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_FORMAT_PEG_NATIVE,
             Self::PegGemma4 => llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_FORMAT_PEG_GEMMA4,
+            Self::PegMinimaxM3 => llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_FORMAT_PEG_MINIMAX_M3,
             Self::Count => llama_cpp_sys_2::LLAMA_RS_COMMON_CHAT_FORMAT_COUNT,
         }
     }
@@ -475,9 +504,11 @@ pub struct LlamaChatParamsView {
     /// " e.g., \"<think>\""
     pub thinking_start_tag: CString,
     /// e.g., \"</think>\""
-    pub thinking_end_tag: CString,
+    pub thinking_end_tags: Vec<CString>,
     /// Think tags, tool call tags, etc.
     pub preserved_tokens: Vec<CString>,
+    /// Additional stops.
+    pub additional_stops: Vec<CString>,
     /// Parser (used to load the PEG Arena).
     pub parser: CString,
     /// Grammar triggers (lazy triggers).
@@ -512,8 +543,11 @@ impl From<llama_cpp_sys_2::llama_rs_common_chat_role> for LlamaChatRole {
 /// A parsed message delimiter definition.
 #[derive(Debug, Clone)]
 pub struct LlamaChatMessageDelimiter {
+    /// The role associated with the chat message.
     pub role: LlamaChatRole,
+    /// The delimiter string
     pub delimiter: CString,
+    /// The token IDs associated with the delimiter
     pub tokens: Vec<LlamaToken>,
 }
 
@@ -595,6 +629,9 @@ pub struct LlamaGenerationParams {
     /// Add end of sentence token.
     /// - Defaults to `false`.
     pub add_eos: bool,
+    /// Force pure content parsing (skip chat parsing).
+    /// - Defaults to `false`.
+    pub force_pure_content: bool,
 }
 
 /// Safe wrapper around `common_chat_templates_inputs`.
@@ -721,6 +758,13 @@ impl LlamaGenerationParams {
         self
     }
 
+    /// Set whether to force pure content parsing (skip chat parsing).
+    /// - Defaults to `false`
+    pub fn with_force_pure_content(mut self, force_pure_content: bool) -> Self {
+        self.force_pure_content = force_pure_content;
+        self
+    }
+
     /// Creates a pointer to `common_chat_templates_inputs`.
     pub fn as_ptr(&self) -> Result<LlamaGenerationParamsPtr, NulError> {
         let get_opt_ptr = |cstr: &Option<CString>| -> *const c_char {
@@ -761,6 +805,7 @@ impl LlamaGenerationParams {
                 self.parallel_tool_calls,
                 self.add_bos,
                 self.add_eos,
+                self.force_pure_content,
                 get_opt_ptr(&self.json_schema),
                 get_opt_ptr(&self.grammar),
                 get_opt_ptr(&self.extra_context),
@@ -821,6 +866,7 @@ impl Default for LlamaGenerationParams {
             parallel_tool_calls: true,
             add_bos: false,
             add_eos: false,
+            force_pure_content: false,
         }
     }
 }

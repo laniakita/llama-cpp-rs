@@ -48,7 +48,8 @@ int llama_rs_fit_params(
     const char *path_model, struct llama_model_params *mparams,
     struct llama_context_params *cparams, float *tensor_split,
     struct llama_model_tensor_buft_override *tensor_buft_overrides,
-    size_t *margins, uint32_t n_ctx_min, enum ggml_log_level log_level);
+    size_t *margins, uint32_t n_ctx_min, const void *extra,
+    enum ggml_log_level log_level);
 
 void llama_rs_memory_breakdown_print(const struct llama_context *ctx);
 
@@ -62,8 +63,7 @@ void llama_rs_mtp_speculative_free(struct llama_rs_mtp_speculative *spec);
 llama_rs_status
 llama_rs_mtp_speculative_begin(struct llama_rs_mtp_speculative *spec,
                                const llama_token *prompt_tokens,
-                               size_t prompt_tokens_count,
-                               int32_t seq_id);
+                               size_t prompt_tokens_count, int32_t seq_id);
 
 llama_rs_status
 llama_rs_mtp_speculative_process(struct llama_rs_mtp_speculative *spec,
@@ -74,13 +74,14 @@ llama_rs_status llama_rs_mtp_speculative_prepare_draft(
     llama_token id_last, const llama_token *prompt_tokens,
     size_t prompt_tokens_count, int32_t seq_id);
 
-llama_rs_status llama_rs_mtp_speculative_execute_drafts(
-    struct llama_rs_mtp_speculative *spec);
+llama_rs_status
+llama_rs_mtp_speculative_execute_drafts(struct llama_rs_mtp_speculative *spec);
 
-llama_rs_status llama_rs_mtp_speculative_get_draft(
-    struct llama_rs_mtp_speculative *spec, int32_t seq_id,
-    llama_token *out_tokens, size_t out_tokens_capacity,
-    size_t *out_tokens_count);
+llama_rs_status
+llama_rs_mtp_speculative_get_draft(struct llama_rs_mtp_speculative *spec,
+                                   int32_t seq_id, llama_token *out_tokens,
+                                   size_t out_tokens_capacity,
+                                   size_t *out_tokens_count);
 
 llama_rs_status
 llama_rs_mtp_speculative_accept(struct llama_rs_mtp_speculative *spec,
@@ -97,9 +98,10 @@ struct common_chat_msg_diffs; // Opaque wrapper for
 
 enum llama_rs_common_chat_format {
   LLAMA_RS_COMMON_CHAT_FORMAT_CONTENT_ONLY,
-  LLAMA_RS_COMMON_CHAT_FORMAT_PEG_NATIVE,
   LLAMA_RS_COMMON_CHAT_FORMAT_PEG_SIMPLE,
+  LLAMA_RS_COMMON_CHAT_FORMAT_PEG_NATIVE,
   LLAMA_RS_COMMON_CHAT_FORMAT_PEG_GEMMA4,
+  LLAMA_RS_COMMON_CHAT_FORMAT_PEG_MINIMAX_M3,
   LLAMA_RS_COMMON_CHAT_FORMAT_COUNT,
 };
 
@@ -120,8 +122,8 @@ enum llama_rs_common_reasoning_format {
 struct common_chat_templates_inputs *common_chat_templates_inputs_create(
     bool add_generation_prompt, bool enable_thinking, int32_t reasoning_format,
     int32_t continue_final_message, bool parallel_tool_calls, bool add_bos,
-    bool add_eos, const char *json_schema, const char *grammar,
-    const char *extra_context);
+    bool add_eos, bool force_pure_content, const char *json_schema,
+    const char *grammar, const char *extra_context);
 void common_chat_templates_inputs_free(
     struct common_chat_templates_inputs *inputs);
 
@@ -150,7 +152,6 @@ struct common_chat_params_view {
   const char *generation_prompt;
   bool supports_thinking;
   const char *thinking_start_tag;
-  const char *thinking_end_tag;
   const char *parser;
 };
 struct common_chat_params_view
@@ -205,6 +206,18 @@ size_t common_chat_params_get_preserved_tokens_count(
     const struct common_chat_params *params);
 const char *
 common_chat_params_get_preserved_token(const struct common_chat_params *params,
+                                       size_t index);
+
+size_t common_chat_params_get_thinking_end_tags_count(
+    const struct common_chat_params *params);
+const char *
+common_chat_params_get_thinking_end_tag(const struct common_chat_params *params,
+                                        size_t index);
+
+size_t common_chat_params_get_additional_stops_count(
+    const struct common_chat_params *params);
+const char *
+common_chat_params_get_additional_stop(const struct common_chat_params *params,
                                        size_t index);
 
 struct llama_rs_chat_parser;

@@ -14,14 +14,13 @@
 //!
 //! - `cuda` enables CUDA gpu support.
 //! - `sampler` adds the [`context::sample::sampler`] struct for a more rusty way of sampling.
-use std::ffi::{c_char, CStr, CString, FromBytesWithNulError, NulError};
+use std::ffi::{c_char, CStr, CString, NulError};
 use std::fmt::Debug;
 use std::num::NonZeroI32;
 use std::sync::OnceLock;
 
 use crate::chat_parser::ChatParamsCreationError;
 use crate::llama_batch::BatchAddError;
-use crate::model::LlamaChatTemplate;
 use std::os::raw::c_int;
 use std::path::PathBuf;
 use std::string::FromUtf8Error;
@@ -437,27 +436,6 @@ pub enum SamplerAcceptError {
     FfiError(i32),
 }
 
-/// Failed to create a new auto parser.
-#[derive(Debug, thiserror::Error)]
-pub enum NewAutoParserError {
-    /// llama.cpp returned a null pointer for the parser result.
-    #[error("null result from llama.cpp")]
-    NullResult,
-}
-
-/// Errors that can occur when analyzing a chat template.
-#[derive(Debug, thiserror::Error)]
-pub enum AnalyzeTemplateError {
-    /// Failed to convert a token to a string.
-    #[error("Failed to convert token to string {0}")]
-    TokenToStringError(#[from] TokenToStringError),
-    /// The provided template was invalid.
-    #[error("Invalid template: {0:#?}")]
-    InvalidTemplate(LlamaChatTemplate),
-    /// An exception occurred in llama.cpp.
-    #[error("Exception occured in llama.cpp")]
-    ExceptionOccured,
-}
 
 /// Get the time in microseconds according to ggml
 ///

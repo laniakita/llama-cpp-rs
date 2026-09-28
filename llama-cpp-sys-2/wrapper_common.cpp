@@ -11,8 +11,8 @@
 #include "chat.h"
 #include "llama.cpp/common/common.h"
 #include "llama.cpp/common/fit.h"
-#include "llama.cpp/common/json.h"
 #include "llama.cpp/common/json-schema-to-grammar.h"
+#include "llama.cpp/common/json.h"
 #include "llama.cpp/common/speculative.h"
 #include "llama.cpp/include/llama.h"
 
@@ -27,7 +27,7 @@ llama_rs_json_schema_to_grammar(const char *schema_json, bool force_gbnf,
 
   *out_grammar = nullptr;
   try {
-    const auto schema = nlohmann::ordered_json::parse(schema_json);
+    const auto schema = common_json::parse(schema_json);
     const auto grammar = json_schema_to_grammar(schema, force_gbnf);
     *out_grammar = llama_rs_dup_string(grammar);
     return *out_grammar ? LLAMA_RS_STATUS_OK
@@ -117,10 +117,12 @@ extern "C" int llama_rs_fit_params(
     const char *path_model, struct llama_model_params *mparams,
     struct llama_context_params *cparams, float *tensor_split,
     struct llama_model_tensor_buft_override *tensor_buft_overrides,
-    size_t *margins, uint32_t n_ctx_min, enum ggml_log_level log_level) {
-  return static_cast<int>(common_fit_params(path_model, mparams, cparams,
-                                            tensor_split, tensor_buft_overrides,
-                                            margins, n_ctx_min, log_level));
+    size_t *margins, uint32_t n_ctx_min, const void *extra,
+    enum ggml_log_level log_level) {
+  return static_cast<int>(common_fit_params(
+      path_model, mparams, cparams, tensor_split, tensor_buft_overrides,
+      margins, n_ctx_min, static_cast<const common_fit_extra_model *>(extra),
+      log_level));
 }
 
 extern "C" void
@@ -342,8 +344,8 @@ extern "C" struct common_chat_templates_inputs *
 common_chat_templates_inputs_create(
     bool add_generation_prompt, bool enable_thinking, int32_t reasoning_format,
     int32_t continue_final_message, bool parallel_tool_calls, bool add_bos,
-    bool add_eos, const char *json_schema, const char *grammar,
-    const char *extra_context) {
+    bool add_eos, bool force_pure_content, const char *json_schema,
+    const char *grammar, const char *extra_context) {
   try {
     auto inputs = new common_chat_templates_inputs();
     inputs->add_generation_prompt = add_generation_prompt;
@@ -355,6 +357,7 @@ common_chat_templates_inputs_create(
     inputs->parallel_tool_calls = parallel_tool_calls;
     inputs->add_bos = add_bos;
     inputs->add_eos = add_eos;
+    inputs->force_pure_content = force_pure_content;
 
     if (json_schema)
       inputs->json_schema = json_schema;
@@ -363,7 +366,7 @@ common_chat_templates_inputs_create(
 
     // Parse extra context JSON string back to dict
     if (extra_context) {
-      auto parsed = nlohmann::json::parse(extra_context);
+      auto parsed = common_json::parse(extra_context);
       if (parsed.is_object()) {
         for (const auto &[k, v] : parsed.items()) {
           inputs->chat_template_kwargs[k] = v.dump();
@@ -471,7 +474,7 @@ extern "C" void common_chat_params_free(struct common_chat_params *params) {
 
 extern "C" struct common_chat_params_view
 common_chat_params_get_view(const struct common_chat_params *params) {
-  struct common_chat_params_view view = {0};
+  struct common_chat_params_view view = {};
   if (!params)
     return view;
 
@@ -482,7 +485,6 @@ common_chat_params_get_view(const struct common_chat_params *params) {
   view.generation_prompt = params->generation_prompt.c_str();
   view.supports_thinking = params->supports_thinking;
   view.thinking_start_tag = params->thinking_start_tag.c_str();
-  view.thinking_end_tag = params->thinking_end_tag.c_str();
   view.parser = params->parser.c_str();
 
   return view; // Returned by value across FFI
@@ -516,7 +518,7 @@ extern "C" size_t common_chat_params_get_grammar_triggers_count(
 extern "C" struct common_grammar_trigger_view
 common_chat_params_get_grammar_trigger(const struct common_chat_params *params,
                                        size_t index) {
-  struct common_grammar_trigger_view view = {0};
+  struct common_grammar_trigger_view view = {};
   if (!params || index >= params->grammar_triggers.size())
     return view;
 
@@ -536,7 +538,7 @@ extern "C" size_t common_chat_params_get_message_delimiters_count(
 extern "C" struct common_chat_msg_delimiter_view
 common_chat_params_get_message_delimiter(
     const struct common_chat_params *params, size_t index) {
-  struct common_chat_msg_delimiter_view view = {0};
+  struct common_chat_msg_delimiter_view view = {};
   if (!params || index >= params->message_delimiters.delimiters.size())
     return view;
 
@@ -560,6 +562,32 @@ common_chat_params_get_preserved_token(const struct common_chat_params *params,
   if (!params || index >= params->preserved_tokens.size())
     return nullptr;
   return params->preserved_tokens[index].c_str();
+}
+
+extern "C" size_t common_chat_params_get_thinking_end_tags_count(
+    const struct common_chat_params *params) {
+  return params ? params->thinking_end_tags.size() : 0;
+}
+
+extern "C" const char *
+common_chat_params_get_thinking_end_tag(const struct common_chat_params *params,
+                                        size_t index) {
+  if (!params || index >= params->thinking_end_tags.size())
+    return nullptr;
+  return params->thinking_end_tags[index].c_str();
+}
+
+extern "C" size_t common_chat_params_get_additional_stops_count(
+    const struct common_chat_params *params) {
+  return params ? params->additional_stops.size() : 0;
+}
+
+extern "C" const char *
+common_chat_params_get_additional_stop(const struct common_chat_params *params,
+                                       size_t index) {
+  if (!params || index >= params->additional_stops.size())
+    return nullptr;
+  return params->additional_stops[index].c_str();
 }
 
 struct llama_rs_chat_parser {
@@ -647,7 +675,7 @@ common_chat_msg_diffs_get_size(const struct common_chat_msg_diffs *diffs) {
 extern "C" struct common_chat_msg_diff_view
 common_chat_msg_diffs_get_view(const struct common_chat_msg_diffs *diffs,
                                size_t index) {
-  struct common_chat_msg_diff_view view = {0};
+  struct common_chat_msg_diff_view view = {};
   if (!diffs)
     return view;
 
