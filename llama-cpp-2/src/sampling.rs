@@ -165,6 +165,14 @@ impl LlamaSampler {
         Self::chain(samplers, false)
     }
 
+    /// Adaptive-P sampling described in <https://github.com/MrJackSpade/adaptive-p-docs/blob/4dde569e2248e960238de7dd633f97086aaa6fa9/sections/01_abstract.md>.
+    #[must_use]
+    pub fn adaptive_p(target: f32, decay: f32, seed: u32) -> Self {
+        let sampler =
+            unsafe { llama_cpp_sys_2::llama_sampler_init_adaptive_p(target, decay, seed) };
+        Self { sampler }
+    }
+
     /// Infill sampling described in the paper: "Efficient Training of Language Models to Fill in the Middle"
     /// <https://arxiv.org/abs/2207.14255>
     #[must_use]
