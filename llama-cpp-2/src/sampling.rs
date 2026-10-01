@@ -165,6 +165,14 @@ impl LlamaSampler {
         Self::chain(samplers, false)
     }
 
+    /// Infill sampling described in the paper: "Efficient Training of Language Models to Fill in the Middle"
+    /// <https://arxiv.org/abs/2207.14255>
+    #[must_use]
+    pub fn infill(model: &LlamaModel) -> Self {
+        let sampler = unsafe { llama_cpp_sys_2::llama_sampler_init_infill(model.vocab().as_ptr()) };
+        Self { sampler }
+    }
+
     #[allow(clippy::doc_markdown)]
     /// Updates the logits l_i' = l_i/t. When t <= 0.0f, the maximum logit is kept at it's original
     /// value, the rest are set to -inf
