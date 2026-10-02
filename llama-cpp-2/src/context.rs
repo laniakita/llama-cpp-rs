@@ -5,6 +5,8 @@ use std::num::NonZeroI32;
 use std::ptr::NonNull;
 use std::slice;
 
+use llama_cpp_sys_2::llama_get_sampled_probs_count_ith;
+
 use crate::llama_batch::LlamaBatch;
 use crate::model::{LlamaLoraAdapter, LlamaModel};
 use crate::sampling::LlamaSampler;
@@ -257,6 +259,72 @@ impl<'model> LlamaContext<'model> {
     #[must_use]
     pub fn token_data_array(&self) -> LlamaTokenDataArray {
         LlamaTokenDataArray::from_iter(self.candidates(), false)
+    }
+
+    /// Get the backend sampled probabilities for the ith token The index matches llama_get_sampled_token_ith().
+    /// Returns NULL if no probabilities were generated.
+    ///
+    /// # Panics
+    ///
+    /// - `n_vocab` does not fit into a usize
+    #[must_use]
+    pub fn sampled_probs_ith(&self, i: i32) -> Option<&[f32]> {
+        let data =
+            unsafe { llama_cpp_sys_2::llama_get_sampled_probs_ith(self.context.as_ptr(), i) };
+        if data.is_null() {
+            return None;
+        }
+        let len = usize::try_from(self.model.n_vocab()).expect("n_vocab does not fit into a usize");
+        unsafe { Some(slice::from_raw_parts(data, len)) }
+    }
+
+    /// Get the backend sampled probs count for the ith token.
+    #[must_use]
+    pub fn sampled_probs_count_ith(&self, i: i32) -> u32 {
+        unsafe { llama_cpp_sys_2::llama_get_sampled_probs_count_ith(self.context.as_ptr(), i) }
+    }
+
+    /// Get the backend sampled logits for the ith token
+    /// Returns NULL if no logits were sampled.
+    ///
+    /// # Panics
+    ///
+    /// - `n_vocab` does not fit into a usize
+    #[must_use]
+    pub fn sampled_logits_ith(&self, i: i32) -> Option<&[f32]> {
+        let data =
+            unsafe { llama_cpp_sys_2::llama_get_sampled_logits_ith(self.context.as_ptr(), i) };
+        if data.is_null() {
+            return None;
+        }
+        let len = usize::try_from(self.model.n_vocab()).expect("n_vocab does not fit into a usize");
+        unsafe { Some(slice::from_raw_parts(data, len)) }
+    }
+
+    /// Get the backend sampled logits count for the ith token.
+    #[must_use]
+    pub fn sampled_logits_count_ith(&self, i: i32) -> u32 {
+        unsafe { llama_cpp_sys_2::llama_get_sampled_logits_count_ith(self.context.as_ptr(), i) }
+    }
+
+    /// Get the backend sampled candidates (token ids) for the ith token.
+    /// These are needed to map probability/logit indices to vocab token ids.
+    /// Returns None if no candidates were sampled.
+    #[must_use]
+    pub fn sampled_candidates_ith(&self, i: i32) -> Option<impl Iterator<Item = LlamaToken> + '_> {
+        let data =
+            unsafe { llama_cpp_sys_2::llama_get_sampled_candidates_ith(self.context.as_ptr(), i) };
+        if data.is_null() {
+            return None;
+        }
+        let len = usize::try_from(self.model.n_vocab()).expect("n_vocab does not fit into a usize");
+        unsafe {
+            Some(
+                slice::from_raw_parts(data, len)
+                    .iter()
+                    .map(|t| LlamaToken::new(*t)),
+            )
+        }
     }
 
     /// Token logits obtained from the last call to `decode()`.
