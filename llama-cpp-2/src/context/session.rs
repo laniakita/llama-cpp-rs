@@ -643,6 +643,21 @@ impl LlamaContext<'_> {
         }
         Ok(())
     }
+
+    /// Wait until all computations are finished.
+    ///
+    /// This is automatically done when using one of the functions below
+    /// [the llama_synchronize() declaration in llama.h] to obtain the
+    /// computation results and is not necessary to call it explicitly
+    /// in most cases.
+    ///
+    /// For details see:
+    /// <https://github.com/ggml-org/llama.cpp/blob/a868c3e3c56657f7e8a6231190dbbe90e7dd86c0/include/llama.h#L1128>
+    pub fn synchronize(&self) {
+        unsafe {
+            llama_cpp_sys_2::llama_synchronize(self.context.as_ptr());
+        }
+    }
 }
 
 /// Opaque, immutable snapshot of a single sequence's state.
