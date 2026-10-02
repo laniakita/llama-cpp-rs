@@ -13,6 +13,7 @@
 #include "llama.cpp/common/fit.h"
 #include "llama.cpp/common/json-schema-to-grammar.h"
 #include "llama.cpp/common/json.h"
+#include "llama.cpp/common/reasoning-budget.h"
 #include "llama.cpp/common/speculative.h"
 #include "llama.cpp/include/llama.h"
 
@@ -693,4 +694,89 @@ common_chat_msg_diffs_get_view(const struct common_chat_msg_diffs *diffs,
   view.tool_call_id = diff.tool_call_delta.id.c_str();
 
   return view;
+}
+
+static inline bool
+is_reasoning_budget_sampler(const struct llama_sampler *smpl) {
+  if (!smpl || !smpl->iface || !smpl->iface->name) {
+    return false;
+  }
+  const char *name = smpl->iface->name(smpl);
+  return name && std::strcmp(name, "reasoning-budget") == 0;
+}
+
+extern "C" struct llama_sampler *llama_rs_reasoning_budget_init(
+    const struct llama_vocab *vocab, const llama_token *const *start_seqs,
+    const size_t *start_seq_lens, size_t num_start_seqs,
+    const llama_token *const *end_seqs, const size_t *end_seq_lens,
+    size_t num_end_seqs, const llama_token *forced_tokens,
+    size_t num_forced_tokens, int32_t budget,
+    enum llama_rs_reasoning_budget_state initial_state) {
+  try {
+    std::vector<llama_tokens> cpp_start;
+    cpp_start.reserve(num_start_seqs);
+    for (size_t i = 0; i < num_start_seqs; ++i) {
+      if (start_seqs && start_seqs[i] && start_seq_lens) {
+        cpp_start.emplace_back(start_seqs[i],
+                               start_seqs[i] + start_seq_lens[i]);
+      }
+    }
+
+    std::vector<llama_tokens> cpp_end;
+    cpp_end.reserve(num_end_seqs);
+    for (size_t i = 0; i < num_end_seqs; ++i) {
+      if (end_seqs && end_seqs[i] && end_seq_lens) {
+        cpp_end.emplace_back(end_seqs[i], end_seqs[i] + end_seq_lens[i]);
+      }
+    }
+
+    llama_tokens cpp_forced;
+    if (forced_tokens && num_forced_tokens > 0) {
+      cpp_forced.assign(forced_tokens, forced_tokens + num_forced_tokens);
+    }
+
+    return common_reasoning_budget_init(
+        vocab, cpp_start, cpp_end, cpp_forced, budget,
+        static_cast<common_reasoning_budget_state>(initial_state));
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+extern "C" enum llama_rs_reasoning_budget_state
+llama_rs_reasoning_budget_get_state(const struct llama_sampler *smpl) {
+  if (!is_reasoning_budget_sampler(smpl)) {
+    return LLAMA_RS_REASONING_BUDGET_IDLE;
+  }
+  return static_cast<llama_rs_reasoning_budget_state>(
+      common_reasoning_budget_get_state(smpl));
+}
+
+extern "C" const llama_token *
+llama_rs_reasoning_budget_get_end_match(const struct llama_sampler *smpl,
+                                        size_t *out_len) {
+  if (!is_reasoning_budget_sampler(smpl)) {
+    if (out_len) {
+      *out_len = 0;
+    }
+    return nullptr;
+  }
+  const llama_tokens *match = common_reasoning_budget_get_end_match(smpl);
+  if (!match || match->empty()) {
+    if (out_len) {
+      *out_len = 0;
+    }
+    return nullptr;
+  }
+  if (out_len) {
+    *out_len = match->size();
+  }
+  return match->data();
+}
+
+extern "C" bool llama_rs_reasoning_budget_force(struct llama_sampler *smpl) {
+  if (!is_reasoning_budget_sampler(smpl)) {
+    return false;
+  }
+  return common_reasoning_budget_force(smpl);
 }

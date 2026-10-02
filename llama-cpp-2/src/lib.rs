@@ -37,6 +37,8 @@ pub mod model;
 #[cfg(feature = "mtmd")]
 pub mod mtmd;
 mod ptr;
+#[cfg(feature = "common")]
+pub mod reasoning;
 pub mod sampling;
 #[cfg(feature = "common")]
 pub mod speculative;
@@ -98,6 +100,10 @@ pub enum LlamaCppError {
     #[cfg(feature = "common")]
     #[error("{0}")]
     FitError(#[from] crate::model::params::FitError),
+    /// There was an error initializing the reasoning budget sampler.
+    #[cfg(feature = "common")]
+    #[error("{0}")]
+    ReasoningBudgetError(#[from] crate::reasoning::ReasoningBudgetError),
 }
 
 /// There was an error while getting the chat template from a model.
@@ -432,7 +438,6 @@ pub enum SamplerAcceptError {
     #[error("ffi error {0}")]
     FfiError(i32),
 }
-
 
 /// Get the time in microseconds according to ggml
 ///
