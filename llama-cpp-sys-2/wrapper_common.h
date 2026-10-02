@@ -249,6 +249,37 @@ struct common_chat_msg_diff_view
 common_chat_msg_diffs_get_view(const struct common_chat_msg_diffs *diffs,
                                size_t index);
 
+enum llama_rs_reasoning_budget_state {
+  LLAMA_RS_REASONING_BUDGET_IDLE = 0,
+  LLAMA_RS_REASONING_BUDGET_COUNTING = 1,
+  LLAMA_RS_REASONING_BUDGET_FORCING = 2,
+  LLAMA_RS_REASONING_BUDGET_WAITING_UTF8 = 3,
+  LLAMA_RS_REASONING_BUDGET_DONE = 4,
+};
+
+struct llama_sampler *llama_rs_reasoning_budget_init(
+    const struct llama_vocab *vocab,
+    const llama_token *const *start_seqs,
+    const size_t *start_seq_lens,
+    size_t num_start_seqs,
+    const llama_token *const *end_seqs,
+    const size_t *end_seq_lens,
+    size_t num_end_seqs,
+    const llama_token *forced_tokens,
+    size_t num_forced_tokens,
+    int32_t budget,
+    enum llama_rs_reasoning_budget_state initial_state);
+
+enum llama_rs_reasoning_budget_state
+llama_rs_reasoning_budget_get_state(const struct llama_sampler *smpl);
+
+const llama_token *
+llama_rs_reasoning_budget_get_end_match(const struct llama_sampler *smpl,
+                                        size_t *out_len);
+
+bool llama_rs_reasoning_budget_force(struct llama_sampler *smpl);
+
 #ifdef __cplusplus
 }
 #endif
+
