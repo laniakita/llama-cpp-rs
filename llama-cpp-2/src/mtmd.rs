@@ -1026,8 +1026,8 @@ impl MtmdInputChunk<'_> {
     /// Returns the new `n_past` value on success.
     pub fn eval_chunk_single(
         &self,
-        mtmd_ctx: &MtmdContext,
-        llama_ctx: &LlamaContext,
+        mtmd_ctx: &mut MtmdContext,
+        llama_ctx: &mut LlamaContext,
         n_past: llama_cpp_sys_2::llama_pos,
         seq_id: llama_cpp_sys_2::llama_seq_id,
         n_batch: i32,
@@ -1037,8 +1037,8 @@ impl MtmdInputChunk<'_> {
 
         let result = unsafe {
             llama_cpp_sys_2::mtmd_helper_eval_chunk_single(
-                mtmd_ctx.context.as_ptr(),
-                llama_ctx.context.as_ptr(),
+                mtmd_ctx.context.as_mut_ptr(),
+                llama_ctx.context.as_mut_ptr(),
                 self.chunk.as_ptr(),
                 n_past,
                 seq_id,

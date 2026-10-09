@@ -116,6 +116,12 @@ impl<'model> MtpSpeculative<'model> {
         &mut self.target_context
     }
 
+    /// Access the draft context.
+    #[must_use]
+    pub fn draft_context(&self) -> &LlamaContext<'model> {
+        &self.draft_context
+    }
+
     /// Access the draft context for cache rollback operations.
     pub fn draft_context_mut(&mut self) -> &mut LlamaContext<'model> {
         &mut self.draft_context
@@ -178,7 +184,7 @@ impl<'model> MtpSpeculative<'model> {
 
         let prompt = tokens_to_raw(prompt_tokens);
         let status = unsafe {
-            llama_cpp_sys_2::llama_rs_mtp_speculative_draft(
+            llama_cpp_sys_2::llama_rs_mtp_speculative_prepare_draft(
                 self.raw.as_mut_ptr(),
                 n_past,
                 id_last.0,
@@ -197,7 +203,7 @@ impl<'model> MtpSpeculative<'model> {
     /// Returns an error if llama.cpp fails to execute drafts.
     pub fn execute_drafts(&mut self) -> Result<(), MtpSpeculativeError> {
         let status =
-            unsafe { llama_cpp_sys_2::llama_rs_mtp_speculative_execute_drafts(self.raw.as_ptr()) };
+            unsafe { llama_cpp_sys_2::llama_rs_mtp_speculative_execute_drafts(self.raw.as_mut_ptr()) };
         status_to_result(status)
     }
 
@@ -206,12 +212,12 @@ impl<'model> MtpSpeculative<'model> {
     /// # Errors
     ///
     /// Returns an error if the sequence draft overflows the maximum allocation.
-    pub fn get_draft(&self, seq_id: i32) -> Result<Vec<LlamaToken>, MtpSpeculativeError> {
+    pub fn get_draft(&mut self, seq_id: i32) -> Result<Vec<LlamaToken>, MtpSpeculativeError> {
         let mut raw_out = vec![0; self.n_max];
         let mut out_len = 0_usize;
         let status = unsafe {
             llama_cpp_sys_2::llama_rs_mtp_speculative_get_draft(
-                self.raw.as_ptr(),
+                self.raw.as_mut_ptr(),
                 seq_id,
                 raw_out.as_mut_ptr(),
                 raw_out.len(),
@@ -233,7 +239,7 @@ impl<'model> MtpSpeculative<'model> {
     /// Returns an error if llama.cpp rejects the call.
     pub fn accept(&mut self, n_accepted: u16, seq_id: i32) -> Result<(), MtpSpeculativeError> {
         let status = unsafe {
-            llama_cpp_sys_2::llama_rs_mtp_speculative_accept(self.raw.as_ptr(), n_accepted, seq_id)
+            llama_cpp_sys_2::llama_rs_mtp_speculative_accept(self.raw.as_mut_ptr(), n_accepted, seq_id)
         };
         status_to_result(status)
     }

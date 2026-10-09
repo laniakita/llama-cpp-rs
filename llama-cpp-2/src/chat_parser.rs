@@ -1,3 +1,5 @@
+//! A wrapping struct around Llama.cpp `common_chat_params` and `common_chat_parse`.
+
 use std::{
     borrow::Cow,
     ffi::{c_char, CStr, CString, NulError},
@@ -196,7 +198,7 @@ impl ChatDiff {
     /// # Errors
     /// - Returns [ChatDiffCreationError::InvalidArgument] if `diff` is null.
     /// - Returns [ChatDiffCreationError::Exception] if llama.cpp returns a null view for the given `diff`.
-    pub fn new(
+    pub(crate) fn new(
         diff: *mut common_chat_msg_diffs,
         index: usize,
     ) -> Result<Self, ChatDiffCreationError> {
@@ -318,7 +320,7 @@ impl LlamaChatParams {
     ///
     /// # Errors
     /// - Returns [ChatParamsCreationError::InvalidArgument] if `ptr` is null.
-    pub fn new(ptr: *mut common_chat_params) -> Result<Self, ChatParamsCreationError> {
+    pub(crate) fn new(ptr: *mut common_chat_params) -> Result<Self, ChatParamsCreationError> {
         if ptr.is_null() {
             return Err(ChatParamsCreationError::InvalidArgument);
         }
@@ -520,10 +522,15 @@ pub struct LlamaChatParamsView {
 /// Chat role enum mapping to llama.cpp's `common_chat_role`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlamaChatRole {
+    /// Unknown chat role.
     Unknown,
+    /// Role used by the system
     System,
+    /// Role used by the assistant
     Assistant,
+    /// Role used by the user
     User,
+    /// Role used by a tool
     Tool,
 }
 

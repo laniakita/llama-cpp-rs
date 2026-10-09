@@ -235,7 +235,7 @@ impl LlamaSampler {
     pub fn adaptive_p(target: f32, decay: f32, seed: u32) -> Self {
         let sampler =
             unsafe { llama_cpp_sys_2::llama_sampler_init_adaptive_p(target, decay, seed) };
-        Self { sampler }
+        Self::from_raw(sampler).expect("failed creating sampler")
     }
 
     /// Infill sampling described in the paper: "Efficient Training of Language Models to Fill in the Middle"
@@ -243,7 +243,7 @@ impl LlamaSampler {
     #[must_use]
     pub fn infill(model: &LlamaModel) -> Self {
         let sampler = unsafe { llama_cpp_sys_2::llama_sampler_init_infill(model.vocab().as_ptr()) };
-        Self { sampler }
+        Self::from_raw(sampler).expect("failed creating sampler")
     }
 
     #[allow(clippy::doc_markdown)]

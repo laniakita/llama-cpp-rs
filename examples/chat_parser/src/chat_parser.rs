@@ -240,16 +240,16 @@ impl<'a> ChatParserCliContext<'a> {
             .meta_val_str("general.name")
             .unwrap_or_else(|_| "Unknown".to_string());
 
-        let (using_mtp, mtp_model_arch, mtp_model_name) = match &mut session.active_context {
-            ActiveContext::Mtp(ref mut mtp) => {
+        let (using_mtp, mtp_model_arch, mtp_model_name) = match &session.active_context {
+            ActiveContext::Mtp(mtp) => {
                 let name = mtp
-                    .draft_context_mut()
-                    .model
+                    .draft_context()
+                    .model()
                     .meta_val_str("general.name")
                     .unwrap_or_else(|_| "Unknown".to_string());
                 let arch = mtp
-                    .draft_context_mut()
-                    .model
+                    .draft_context()
+                    .model()
                     .meta_val_str("general.architecture")
                     .unwrap_or_else(|_| "Unknown".to_string());
                 (true, arch, name)
@@ -621,14 +621,13 @@ impl<'a> ChatSession<'a> {
                 };
 
                 self.n_past = chunk.eval_chunk_single(
-                    &self.mtmd_context,
+                    &mut self.mtmd_context,
                     active_ctx,
                     self.n_past,
                     0,
                     batch_size,
                     true,
                 )?;
-                active_ctx.clear_and_mark_logit(-1);
                 if let Some(tokens) = chunk.text_tokens() {
                     prompt_tokens.extend_from_slice(tokens);
                 }

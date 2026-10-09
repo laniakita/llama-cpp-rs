@@ -315,7 +315,7 @@ impl LlamaContext<'_> {
     ) -> Result<SeqDataExt, KvCacheConversionError> {
         let size = unsafe {
             llama_cpp_sys_2::llama_state_seq_get_size_ext(
-                self.context.as_ptr(),
+                self.synchronizable_ptr(),
                 seq_id,
                 flags,
             )
@@ -327,7 +327,7 @@ impl LlamaContext<'_> {
         let mut data = vec![0u8; size];
         unsafe {
             llama_cpp_sys_2::llama_state_seq_get_data_ext(
-                self.context.as_ptr(),
+                self.synchronizable_ptr(),
                 data.as_mut_ptr(),
                 size,
                 seq_id,
@@ -346,7 +346,7 @@ impl LlamaContext<'_> {
     pub fn set_seq_state_ext(&mut self, seq_id: i32, data: &SeqDataExt, flags: u32) {
         unsafe {
             llama_cpp_sys_2::llama_state_seq_set_data_ext(
-                self.context.as_ptr(),
+                self.context.as_mut_ptr(),
                 data.data.as_ptr(),
                 data.data.len(),
                 seq_id,

@@ -6,8 +6,6 @@ use std::marker::PhantomData;
 use std::num::NonZeroI32;
 use std::slice;
 
-use llama_cpp_sys_2::llama_get_sampled_probs_count_ith;
-
 use crate::llama_batch::LlamaBatch;
 use crate::model::{LlamaLoraAdapter, LlamaModel};
 use crate::ptr::Ptr;
@@ -31,9 +29,8 @@ pub struct LlamaContext<'a> {
     pub(crate) context: Ptr<llama_cpp_sys_2::llama_context>,
     /// Backend samplers kept alive for the context's lifetime.
     _backend_samplers: Vec<(i32, LlamaSampler)>,
-    /// The context internally holds a reference to the model, which can be
-    /// retrieved with `llama_get_model`.
-    model: PhantomData<&'a LlamaModel>,
+    /// A reference to the context's model.
+    model: &'a LlamaModel,
     /// Some data in the context acts as-if behind a `Cell`, such as
     /// `t_start_us` and `n_eval`.
     data: PhantomData<Cell<()>>,
@@ -54,30 +51,35 @@ impl Debug for LlamaContext<'_> {
 }
 
 impl<'model> LlamaContext<'model> {
-    pub(crate) fn new(llama_context: Ptr<llama_cpp_sys_2::llama_context>) -> Self {
+    pub(crate) fn new(
+        llama_model: &'model LlamaModel,
+        llama_context: Ptr<llama_cpp_sys_2::llama_context>,
+    ) -> Self {
         Self {
             context: llama_context,
             _backend_samplers: Vec::new(),
-            model: PhantomData,
+            model: llama_model,
             data: PhantomData,
         }
     }
 
     pub(crate) fn with_samplers(
+        llama_model: &'model LlamaModel,
         llama_context: Ptr<llama_cpp_sys_2::llama_context>,
         backend_samplers: Vec<(i32, LlamaSampler)>,
     ) -> Self {
         Self {
             context: llama_context,
             _backend_samplers: backend_samplers,
-            model: PhantomData,
+            model: llama_model,
             data: PhantomData,
         }
     }
 
-    // FIXME(madsmtm): Somehow return `LlamaModel<'_>` here?
-    fn model_ptr(&self) -> *const llama_cpp_sys_2::llama_model {
-        unsafe { llama_cpp_sys_2::llama_get_model(self.context.as_ptr()) }
+    /// Returns a reference to the model this context was created with.
+    #[must_use]
+    pub fn model(&self) -> &'model LlamaModel {
+        self.model
     }
 
     /// Gets the max number of logical tokens that can be submitted to decode. Must be greater than or equal to [`Self::n_ubatch`].
@@ -134,14 +136,6 @@ impl<'model> LlamaContext<'model> {
             None => Ok(()),
             Some(error) => Err(EncodeError::from(error)),
         }
-    }
-
-    /// Manually mark a specific logit index as initialized.
-    /// This is required when using external C++ APIs (like `mtmd`) that evaluate tokens
-    /// without passing through `LlamaContext::decode`.
-    pub fn clear_and_mark_logit(&mut self, i: i32) {
-        self.initialized_logits.clear();
-        self.initialized_logits.push(i);
     }
 
     /// Get a mutable pointer to `llama_context` for the cases where the
@@ -240,13 +234,10 @@ impl<'model> LlamaContext<'model> {
     fn embeddings_out_len(&self) -> usize {
         let pooling = unsafe { llama_cpp_sys_2::llama_pooling_type(self.context.as_ptr()) };
 
-        let model = self.model_ptr();
         if pooling == llama_cpp_sys_2::LLAMA_POOLING_TYPE_RANK {
-            let n_cls_out = unsafe { llama_cpp_sys_2::llama_model_n_cls_out(model) };
-            usize::try_from(n_cls_out).expect("n_cls_out does not fit into a usize")
+            usize::try_from(self.model.n_cls_out()).expect("n_cls_out does not fit into a usize")
         } else {
-            let n_embd_out = unsafe { llama_cpp_sys_2::llama_model_n_embd_out(model) };
-            usize::try_from(n_embd_out).expect("n_embd_out does not fit into a usize")
+            usize::try_from(self.model.n_embd_out()).expect("n_embd_out does not fit into a usize")
         }
     }
 
@@ -290,7 +281,7 @@ impl<'model> LlamaContext<'model> {
     #[must_use]
     pub fn sampled_probs_ith(&self, i: i32) -> Option<&[f32]> {
         let data =
-            unsafe { llama_cpp_sys_2::llama_get_sampled_probs_ith(self.context.as_ptr(), i) };
+            unsafe { llama_cpp_sys_2::llama_get_sampled_probs_ith(self.synchronizable_ptr(), i) };
         if data.is_null() {
             return None;
         }
@@ -301,7 +292,7 @@ impl<'model> LlamaContext<'model> {
     /// Get the backend sampled probs count for the ith token.
     #[must_use]
     pub fn sampled_probs_count_ith(&self, i: i32) -> u32 {
-        unsafe { llama_cpp_sys_2::llama_get_sampled_probs_count_ith(self.context.as_ptr(), i) }
+        unsafe { llama_cpp_sys_2::llama_get_sampled_probs_count_ith(self.synchronizable_ptr(), i) }
     }
 
     /// Get the backend sampled logits for the ith token
@@ -313,7 +304,7 @@ impl<'model> LlamaContext<'model> {
     #[must_use]
     pub fn sampled_logits_ith(&self, i: i32) -> Option<&[f32]> {
         let data =
-            unsafe { llama_cpp_sys_2::llama_get_sampled_logits_ith(self.context.as_ptr(), i) };
+            unsafe { llama_cpp_sys_2::llama_get_sampled_logits_ith(self.synchronizable_ptr(), i) };
         if data.is_null() {
             return None;
         }
@@ -324,7 +315,7 @@ impl<'model> LlamaContext<'model> {
     /// Get the backend sampled logits count for the ith token.
     #[must_use]
     pub fn sampled_logits_count_ith(&self, i: i32) -> u32 {
-        unsafe { llama_cpp_sys_2::llama_get_sampled_logits_count_ith(self.context.as_ptr(), i) }
+        unsafe { llama_cpp_sys_2::llama_get_sampled_logits_count_ith(self.synchronizable_ptr(), i) }
     }
 
     /// Get the backend sampled candidates (token ids) for the ith token.
@@ -332,8 +323,9 @@ impl<'model> LlamaContext<'model> {
     /// Returns None if no candidates were sampled.
     #[must_use]
     pub fn sampled_candidates_ith(&self, i: i32) -> Option<impl Iterator<Item = LlamaToken> + '_> {
-        let data =
-            unsafe { llama_cpp_sys_2::llama_get_sampled_candidates_ith(self.context.as_ptr(), i) };
+        let data = unsafe {
+            llama_cpp_sys_2::llama_get_sampled_candidates_ith(self.synchronizable_ptr(), i)
+        };
         if data.is_null() {
             return None;
         }
@@ -367,10 +359,7 @@ impl<'model> LlamaContext<'model> {
         let data = unsafe { llama_cpp_sys_2::llama_get_logits(self.synchronizable_ptr()) };
         assert!(!data.is_null(), "logits data for last token is null");
 
-        let model = self.model_ptr();
-        let vocab = unsafe { llama_cpp_sys_2::llama_model_get_vocab(model) };
-        let n_vocab = unsafe { llama_cpp_sys_2::llama_vocab_n_tokens(vocab) };
-        let len = usize::try_from(n_vocab).expect("n_vocab does not fit into a usize");
+        let len = usize::try_from(self.model.n_vocab()).expect("n_vocab does not fit into a usize");
 
         unsafe { slice::from_raw_parts(data, len) }
     }
@@ -417,10 +406,7 @@ impl<'model> LlamaContext<'model> {
             panic!("invalid logit index {i}");
         }
 
-        let model = self.model_ptr();
-        let vocab = unsafe { llama_cpp_sys_2::llama_model_get_vocab(model) };
-        let n_vocab = unsafe { llama_cpp_sys_2::llama_vocab_n_tokens(vocab) };
-        let len = usize::try_from(n_vocab).expect("n_vocab does not fit into a usize");
+        let len = usize::try_from(self.model.n_vocab()).expect("n_vocab does not fit into a usize");
 
         unsafe { slice::from_raw_parts(data, len) }
     }

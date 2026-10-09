@@ -85,10 +85,8 @@ pub struct ReasoningBudget {
 
 impl Clone for ReasoningBudget {
     fn clone(&self) -> Self {
-        let ptr = unsafe { llama_cpp_sys_2::llama_sampler_clone(self.sampler.sampler) };
-        assert!(!ptr.is_null(), "llama_sampler_clone returned null");
         Self {
-            sampler: LlamaSampler { sampler: ptr },
+            sampler: self.sampler.clone(),
         }
     }
 }
@@ -163,22 +161,17 @@ impl ReasoningBudget {
             )
         };
 
-        if sampler_ptr.is_null() {
-            Err(ReasoningBudgetError::NullSampler)
-        } else {
-            Ok(Self {
-                sampler: LlamaSampler {
-                    sampler: sampler_ptr,
-                },
-            })
-        }
+        let sampler =
+            LlamaSampler::from_raw(sampler_ptr).ok_or(ReasoningBudgetError::NullSampler)?;
+        Ok(Self { sampler })
     }
 
     /// Returns the current state of the reasoning budget sampler.
     #[must_use]
     pub fn state(&self) -> ReasoningBudgetState {
-        let raw =
-            unsafe { llama_cpp_sys_2::llama_rs_reasoning_budget_get_state(self.sampler.sampler) };
+        let raw = unsafe {
+            llama_cpp_sys_2::llama_rs_reasoning_budget_get_state(self.sampler.sampler.as_ptr())
+        };
         raw.into()
     }
 
@@ -189,7 +182,7 @@ impl ReasoningBudget {
         let mut len: usize = 0;
         let ptr = unsafe {
             llama_cpp_sys_2::llama_rs_reasoning_budget_get_end_match(
-                self.sampler.sampler,
+                self.sampler.sampler.as_ptr(),
                 std::ptr::addr_of_mut!(len),
             )
         };
@@ -204,7 +197,7 @@ impl ReasoningBudget {
     ///
     /// Returns `true` if the transition occurred (i.e. if the sampler was currently in `Counting` state).
     pub fn force(&mut self) -> bool {
-        unsafe { llama_cpp_sys_2::llama_rs_reasoning_budget_force(self.sampler.sampler) }
+        unsafe { llama_cpp_sys_2::llama_rs_reasoning_budget_force(self.sampler.sampler.as_mut_ptr()) }
     }
 
     /// Accepts a token into the reasoning budget sampler.
@@ -220,7 +213,7 @@ impl ReasoningBudget {
     /// Applies the reasoning budget sampler to a candidate token array.
     ///
     /// When forcing, all logits except the forced token are set to `-INFINITY`.
-    pub fn apply(&self, data_array: &mut LlamaTokenDataArray) {
+    pub fn apply(&mut self, data_array: &mut LlamaTokenDataArray) {
         self.sampler.apply(data_array);
     }
 

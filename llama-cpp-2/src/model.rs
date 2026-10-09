@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use std::ffi::{c_char, CStr, CString};
 use std::os::raw::c_int;
 use std::path::Path;
-use std::ptr::{self, NonNull};
+use std::ptr;
 use std::str::Utf8Error;
 
 use crate::chat_parser::{LlamaChatParams, LlamaGenerationParams};
@@ -274,9 +274,13 @@ impl LlamaChatToolCall {
 /// The Rope type that's used within the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RopeType {
+    /// Normal RoPE.
     Norm,
+    /// NeoX-style RoPE.
     NeoX,
+    /// Multimodal RoPE (M-RoPE).
     MRope,
+    /// Vision RoPE.
     Vision,
 }
 
@@ -581,7 +585,7 @@ impl LlamaModel {
         };
         let context = Ptr::new(context).ok_or(LlamaContextLoadError::NullReturn)?;
 
-        Ok(LlamaContext::new(context))
+        Ok(LlamaContext::new(self, context))
     }
 
     /// Create a new context bound to another context via llama.cpp's `ctx_other` field.
@@ -613,7 +617,7 @@ impl LlamaModel {
         };
         let context = Ptr::new(context).ok_or(LlamaContextLoadError::NullReturn)?;
 
-        Ok(LlamaContext::new(context))
+        Ok(LlamaContext::new(self, context))
     }
 
     /// Creates a new context with backend samplers attached for specific sequences.
@@ -676,7 +680,7 @@ impl LlamaModel {
         };
         let context = Ptr::new(context).ok_or(LlamaContextLoadError::NullReturn)?;
 
-        Ok(LlamaContext::with_samplers(context, samplers))
+        Ok(LlamaContext::with_samplers(self, context, samplers))
     }
 
     /// Apply the models chat template to some messages.
